@@ -1,5 +1,5 @@
 """
-Last Epoch 한국어 번역패치 원클릭 적용기 v2.0
+Last Epoch 한국어 번역패치 원클릭 적용기
 GitHub: fnrkp089/LETrans_Kr
 
 Features:
@@ -49,7 +49,7 @@ GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-USER_AGENT = "LastEpoch-KR-Patcher/2.0"
+USER_AGENT = f"LastEpoch-KR-Patcher/{PATCHER_VERSION}"
 
 # LELocalePatch 관련 경로 (게임 루트 기준)
 BUNDLE_SUBDIR = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "StandaloneWindows64"
@@ -61,7 +61,7 @@ PATCH_STATE_FILE = "kr_patch_state.json"
 BACKUP_DIR_NAME = "kr_patch_backup"
 
 # 패처 자체 버전
-PATCHER_VERSION = "2.0.0"
+PATCHER_VERSION = "0.1.0"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,6 +69,21 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("patcher")
+
+
+def parse_version(ver: str) -> tuple[int, ...]:
+    """
+    버전 문자열을 비교 가능한 튜플로 변환.
+    "v0.1.0" → (0, 1, 0), "patcher-v1.2.3" → (1, 2, 3)
+    """
+    cleaned = re.sub(r"^[a-zA-Z-]*v?", "", ver.strip())
+    parts = []
+    for p in cleaned.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) if parts else (0,)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -269,7 +284,7 @@ class PatchState:
         "patch_date": "2026-04-01T12:00:00",
         "game_buildid": "14523897",
         "bundle_hash": "abc123...",
-        "patcher_version": "2.0.0",
+        "patcher_version": "0.1.0",
         "files_applied": [...]
     }
     """
@@ -303,7 +318,7 @@ class PatchState:
         current = self.patch_version
         if not current:
             return True
-        return current != new_version
+        return parse_version(current) < parse_version(new_version)
 
     def game_was_updated(self, current_buildid: str) -> bool:
         saved = self.game_buildid
@@ -466,8 +481,7 @@ def check_patcher_update() -> tuple[bool, str, str]:
         if result is None:
             return (False, PATCHER_VERSION, "")
         latest_tag, dl_url = result
-        clean_ver = latest_tag.lstrip("v").replace("patcher-", "")
-        if clean_ver != PATCHER_VERSION:
+        if parse_version(latest_tag) > parse_version(PATCHER_VERSION):
             return (True, latest_tag, dl_url)
     except Exception as e:
         log.warning(f"패처 업데이트 확인 실패: {e}")
