@@ -1,0 +1,38 @@
+name: Build Patcher EXE
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-patcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install pyinstaller detools
+
+      - name: Build EXE
+        run: |
+          cd patcher
+          pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" --clean patcher.py
+
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: patcher/dist/LastEpoch_KR_Patcher.exe
+
+      - name: Upload artifact (manual)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LastEpoch_KR_Patcher
+          path: patcher/dist/LastEpoch_KR_Patcher.exe
