@@ -49,7 +49,7 @@ GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-USER_AGENT = f"LastEpoch-KR-Patcher/{PATCHER_VERSION}"
+USER_AGENT = "LastEpoch-KR-Patcher"
 
 # LELocalePatch 관련 경로 (게임 루트 기준)
 BUNDLE_SUBDIR = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "StandaloneWindows64"
