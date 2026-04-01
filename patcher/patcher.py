@@ -1,5 +1,5 @@
 """
-Last Epoch 한국어 번역패치
+Last Epoch 한국어 번역패치 원클릭 적용기
 GitHub: fnrkp089/LETrans_Kr
 """
 
@@ -41,11 +41,18 @@ try:
 except ImportError:
     HAS_DETOOLS = False
 
+# Windows DPI 스케일링 수정 (Win11에서 버튼 잘림 방지)
+try:
+    import ctypes
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    pass
+
 # ─── 상수 ────────────────────────────────────────────────
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.3.1"
+PATCHER_VERSION = "0.4.0"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -316,7 +323,6 @@ def run_lelocale_patch(lelocale_exe, bundle_path, action, json_source, progress_
         progress_cb("LELocalePatch 실행 중...", -1)
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     log.info(f"LELocalePatch stdout: {result.stdout}")
-    log.info(f"LELocalePatch stderr: {result.stderr}")
     if result.returncode != 0:
         raise RuntimeError(f"LELocalePatch 실행 실패 (exit code: {result.returncode})\n{result.stderr or result.stdout}")
     return result
@@ -499,10 +505,7 @@ class PatchOrchestrator:
         return None
 
     def _find_json_source(self, extract_dir):
-        """
-        번역 JSON이 있는 폴더를 찾는다.
-        _ko.json 파일이 가장 많은 폴더를 선택. (manifest.json 등에 속지 않기 위해)
-        """
+        """_ko.json이 가장 많은 폴더를 선택 (manifest.json 오염 방지)."""
         best_dir = extract_dir
         best_count = 0
         for root, dirs, files in os.walk(extract_dir):
@@ -510,7 +513,6 @@ class PatchOrchestrator:
             if len(ko_jsons) > best_count:
                 best_count = len(ko_jsons)
                 best_dir = root
-        # _ko.json이 없으면 .json이 가장 많은 폴더 (manifest 제외)
         if best_count == 0:
             for root, dirs, files in os.walk(extract_dir):
                 jsons = [f for f in files if f.endswith(".json") and f != "manifest.json"]
@@ -552,7 +554,7 @@ def run_gui():
         def __init__(self, root):
             self.root = root
             self.root.title(f"Last Epoch 한국어 번역패치 v{PATCHER_VERSION}")
-            self.root.geometry("600x540")
+            self.root.geometry("600x580")
             self.root.resizable(False, False)
             self.root.configure(bg=self.BG)
             self.game_path = tk.StringVar()
