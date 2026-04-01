@@ -1,5 +1,5 @@
 """
-Last Epoch 한국어 번역패치 원클릭 적용기
+Last Epoch 한국어 번역패치 원클릭
 GitHub: fnrkp089/LETrans_Kr
 """
 
@@ -575,7 +575,7 @@ class PatchOrchestrator:
 
                     if lelocale_exe:
                         self._status("LELocalePatch로 번들 패치 중...")
-                        run_lelocale_patch(lelocale_exe, str(bundle_path), "patch", json_source)
+                        run_lelocale_patch(lelocale_exe, str(bundle_path), "import", json_source)
                         files = self._list_json_files(json_source)
                         self._log(f"LELocalePatch: {len(files)}개 JSON 적용")
                     else:
@@ -920,7 +920,7 @@ def run_cli():
     if res["success"]:
         print(f"\n{'=' * 55}")
         print(f"  ✅ {res['message']}")
-        print(f"  게임 실행해서 즐기세요!")
+        print(f"  게임을 실행하세요!")
         print(f"{'=' * 55}")
     else:
         print(f"\n  ❌ {res['message']}")
