@@ -20,12 +20,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pyinstaller detools
+        run: pip install pyinstaller detools certifi
 
       - name: Build EXE
         run: |
           cd patcher
-          pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" --clean patcher.py
+          pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" --hidden-import certifi --collect-data certifi --clean patcher.py
 
       - name: Upload to Release
         if: github.event_name == 'release'
