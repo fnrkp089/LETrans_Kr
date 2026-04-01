@@ -1,5 +1,5 @@
 """
-Last Epoch 한국어 번역패치 원클릭
+Last Epoch 한국어 번역패치
 GitHub: fnrkp089/LETrans_Kr
 """
 
@@ -34,7 +34,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.2.7"
+PATCHER_VERSION = "0.3.0"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -42,7 +42,7 @@ USER_AGENT = f"LastEpoch-KR-Patcher/{PATCHER_VERSION}"
 
 BUNDLE_SUBDIR = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "StandaloneWindows64"
 BUNDLE_FILENAME = "localization-string-tables-korean(ko)_assets_all.bundle"
-CATALOG_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "catalog.json"
+CATALOG_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "catalog.bin"
 
 PATCH_STATE_FILE = "kr_patch_state.json"
 BACKUP_DIR_NAME = "kr_patch_backup"
@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("patcher")
 
 
-def parse_version(ver: str) -> tuple[int, ...]:
+def parse_version(ver):
     cleaned = re.sub(r"^[a-zA-Z-]*v?", "", ver.strip())
     parts = []
     for p in cleaned.split("."):
@@ -122,9 +122,6 @@ def find_game_path():
             game_dir = steamapps / "common" / installdir
             if game_dir.exists():
                 return str(game_dir)
-        game_dir = steamapps / "common" / GAME_FOLDER_NAME
-        if game_dir.exists():
-            return str(game_dir)
     return None
 
 
@@ -141,15 +138,12 @@ def github_api_get(url):
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-
 def fetch_latest_release():
     return github_api_get(GITHUB_API_LATEST)
 
-
 def fetch_patcher_latest_version():
     try:
-        releases = github_api_get(GITHUB_API_RELEASES)
-        for rel in releases:
+        for rel in github_api_get(GITHUB_API_RELEASES):
             for asset in rel.get("assets", []):
                 name = asset["name"].lower()
                 if "patcher" in name and name.endswith(".exe"):
@@ -157,7 +151,6 @@ def fetch_patcher_latest_version():
     except Exception:
         pass
     return None
-
 
 def find_release_assets(release):
     assets = {}
@@ -190,7 +183,6 @@ def download_file(url, dest, progress_cb=None):
                 if progress_cb:
                     progress_cb(downloaded, total)
 
-
 def sha256_file(filepath):
     h = hashlib.sha256()
     with open(filepath, "rb") as f:
@@ -198,10 +190,8 @@ def sha256_file(filepath):
             h.update(chunk)
     return h.hexdigest()
 
-
 def verify_checksum(filepath, expected_hash):
     return sha256_file(filepath).lower() == expected_hash.lower()
-
 
 def download_and_parse_checksums(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -249,9 +239,7 @@ class PatchState:
 
     def game_was_updated(self, current_buildid):
         saved = self.game_buildid
-        if not saved:
-            return False
-        return saved != current_buildid
+        return saved != current_buildid if saved else False
 
     def update(self, patch_version, game_buildid, bundle_hash, files_applied):
         self.data.update({"patch_version": patch_version, "patch_date": datetime.now().isoformat(), "game_buildid": game_buildid, "bundle_hash": bundle_hash, "patcher_version": PATCHER_VERSION, "files_applied": files_applied})
@@ -271,10 +259,9 @@ def create_backup(game_path):
         backed_up.append(BUNDLE_FILENAME)
     catalog = game / CATALOG_RELPATH
     if catalog.exists():
-        shutil.copy2(catalog, backup_dir / "catalog.json")
-        backed_up.append("catalog.json")
+        shutil.copy2(catalog, backup_dir / "catalog.bin")
+        backed_up.append("catalog.bin")
     return str(backup_dir) if backed_up else None
-
 
 def restore_backup(game_path):
     game = Path(game_path)
@@ -286,10 +273,10 @@ def restore_backup(game_path):
     if bk_bundle.exists():
         shutil.copy2(bk_bundle, game / BUNDLE_SUBDIR / BUNDLE_FILENAME)
         restored.append(BUNDLE_FILENAME)
-    bk_catalog = backup_dir / "catalog.json"
+    bk_catalog = backup_dir / "catalog.bin"
     if bk_catalog.exists():
         shutil.copy2(bk_catalog, game / CATALOG_RELPATH)
-        restored.append("catalog.json")
+        restored.append("catalog.bin")
     if restored:
         state_file = game / PATCH_STATE_FILE
         if state_file.exists():
@@ -309,11 +296,7 @@ def find_bundle_path(game_path):
         for f in bundle_dir.glob("*korean*"):
             if f.suffix == ".bundle":
                 return f
-        for f in bundle_dir.glob("*ko*"):
-            if f.suffix == ".bundle" and "localization" in f.name.lower():
-                return f
     return None
-
 
 def run_lelocale_patch(lelocale_exe, bundle_path, action, json_source, progress_cb=None):
     cmd = [lelocale_exe, bundle_path, action, json_source]
@@ -321,9 +304,10 @@ def run_lelocale_patch(lelocale_exe, bundle_path, action, json_source, progress_
     if progress_cb:
         progress_cb("LELocalePatch 실행 중...", -1)
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    log.info(f"LELocalePatch stdout: {result.stdout}")
+    log.info(f"LELocalePatch stderr: {result.stderr}")
     if result.returncode != 0:
         raise RuntimeError(f"LELocalePatch 실행 실패 (exit code: {result.returncode})\n{result.stderr or result.stdout}")
-    log.info(f"LELocalePatch 완료:\n{result.stdout}")
     return result
 
 
@@ -353,7 +337,6 @@ def check_patcher_update():
     except Exception:
         pass
     return (False, PATCHER_VERSION, "")
-
 
 def self_update(download_url):
     if not getattr(sys, "frozen", False):
@@ -413,9 +396,6 @@ class PatchOrchestrator:
                 result.update(success=True, version=tag, message=msg)
                 return result
 
-            if game_updated:
-                self._log("게임 업데이트로 인해 패치를 재적용합니다.")
-
             assets = find_release_assets(release)
             if "patch_bundle" not in assets:
                 raise RuntimeError(f"릴리즈에서 패치 번들(.zip)을 찾을 수 없습니다.\nhttps://github.com/{GITHUB_REPO}/releases")
@@ -467,6 +447,10 @@ class PatchOrchestrator:
                     lelocale_exe = self._find_file(extract_dir, "lelocalepatch.exe")
                     json_source = self._find_json_source(extract_dir)
 
+                    self._log(f"LELocalePatch: {lelocale_exe}")
+                    self._log(f"JSON 소스: {json_source}")
+                    self._log(f"JSON 파일들: {self._list_json_files(json_source)}")
+
                     self._status("기존 파일 백업 중...")
                     create_backup(self.game_path)
 
@@ -476,7 +460,7 @@ class PatchOrchestrator:
                         files = self._list_json_files(json_source)
                         self._log(f"LELocalePatch: {len(files)}개 JSON 적용")
                     else:
-                        self._log("LELocalePatch.exe 미포함 — 직접 복사 모드")
+                        self._log("⚠️ LELocalePatch.exe 미포함 — 직접 복사 모드")
                         files = self._apply_direct_copy(extract_dir)
 
                 current_buildid = get_steam_buildid(self.game_path)
@@ -493,6 +477,7 @@ class PatchOrchestrator:
             result["message"] = str(e)
             self._log(f"❌ 오류: {e}")
             self._status("❌ 오류 발생")
+            log.exception("Patch failed")
         return result
 
     def _find_file(self, root_dir, filename_lower):
@@ -503,21 +488,29 @@ class PatchOrchestrator:
         return None
 
     def _find_json_source(self, extract_dir):
+        """
+        번역 JSON이 있는 폴더를 찾는다.
+        _ko.json 파일이 가장 많은 폴더를 선택. (manifest.json 등에 속지 않기 위해)
+        """
+        best_dir = extract_dir
+        best_count = 0
         for root, dirs, files in os.walk(extract_dir):
-            for f in files:
-                if f.endswith(".zip") and "json" in f.lower():
-                    return os.path.join(root, f)
-        for root, dirs, files in os.walk(extract_dir):
-            if any(f.endswith(".json") for f in files):
-                return root
-        return extract_dir
+            ko_jsons = [f for f in files if f.endswith("_ko.json")]
+            if len(ko_jsons) > best_count:
+                best_count = len(ko_jsons)
+                best_dir = root
+        # _ko.json이 없으면 .json이 가장 많은 폴더 (manifest 제외)
+        if best_count == 0:
+            for root, dirs, files in os.walk(extract_dir):
+                jsons = [f for f in files if f.endswith(".json") and f != "manifest.json"]
+                if len(jsons) > best_count:
+                    best_count = len(jsons)
+                    best_dir = root
+        return best_dir
 
     def _list_json_files(self, source):
-        if os.path.isfile(source) and source.endswith(".zip"):
-            with zipfile.ZipFile(source, "r") as zf:
-                return [n for n in zf.namelist() if n.endswith(".json")]
-        elif os.path.isdir(source):
-            return [f for f in os.listdir(source) if f.endswith(".json")]
+        if os.path.isdir(source):
+            return [f for f in os.listdir(source) if f.endswith(".json") and f != "manifest.json"]
         return []
 
     def _apply_direct_copy(self, extract_dir):
