@@ -14,10 +14,21 @@ import logging
 import tempfile
 import subprocess
 import threading
+import ssl
 import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime
+
+# SSL 인증서 설정 (PyInstaller exe에서 인증서 못 찾는 문제 해결)
+try:
+    import certifi
+    SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    try:
+        SSL_CONTEXT = ssl.create_default_context()
+    except Exception:
+        SSL_CONTEXT = ssl._create_unverified_context()
 
 try:
     import winreg
@@ -34,7 +45,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.3.0"
+PATCHER_VERSION = "0.3.1"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -135,7 +146,7 @@ def get_steam_buildid(game_path):
 
 def github_api_get(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github.v3+json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 def fetch_latest_release():
@@ -170,7 +181,7 @@ def find_release_assets(release):
 
 def download_file(url, dest, progress_cb=None):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=120, context=SSL_CONTEXT) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         downloaded = 0
         with open(dest, "wb") as f:
@@ -195,7 +206,7 @@ def verify_checksum(filepath, expected_hash):
 
 def download_and_parse_checksums(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=15, context=SSL_CONTEXT) as resp:
         text = resp.read().decode("utf-8")
     result = {}
     for line in text.strip().splitlines():
