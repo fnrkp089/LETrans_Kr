@@ -47,23 +47,11 @@ CATALOG_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "catalog.
 PATCH_STATE_FILE = "kr_patch_state.json"
 BACKUP_DIR_NAME = "kr_patch_backup"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("patcher")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  유틸: 시맨틱 버전 비교
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 def parse_version(ver: str) -> tuple[int, ...]:
-    """
-    "v0.1.0" → (0, 1, 0)
-    "patcher-v1.2.3" → (1, 2, 3)
-    """
     cleaned = re.sub(r"^[a-zA-Z-]*v?", "", ver.strip())
     parts = []
     for p in cleaned.split("."):
@@ -74,19 +62,16 @@ def parse_version(ver: str) -> tuple[int, ...]:
     return tuple(parts) if parts else (0,)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  1. STEAM 경로 탐지
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 1. STEAM 경로 탐지 ━━━
 
-def find_steam_install_path() -> str | None:
+def find_steam_install_path():
     if winreg is None:
         return None
-    reg_paths = [
+    for hive, subkey in [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam"),
         (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam"),
-    ]
-    for hive, subkey in reg_paths:
+    ]:
         try:
             with winreg.OpenKey(hive, subkey) as key:
                 val, _ = winreg.QueryValueEx(key, "InstallPath")
@@ -97,13 +82,9 @@ def find_steam_install_path() -> str | None:
     return None
 
 
-def parse_vdf_library_folders(steam_path: str) -> list[str]:
-    vdf_candidates = [
-        Path(steam_path) / "steamapps" / "libraryfolders.vdf",
-        Path(steam_path) / "config" / "libraryfolders.vdf",
-    ]
+def parse_vdf_library_folders(steam_path):
     folders = [steam_path]
-    for vdf_path in vdf_candidates:
+    for vdf_path in [Path(steam_path) / "steamapps" / "libraryfolders.vdf", Path(steam_path) / "config" / "libraryfolders.vdf"]:
         if not vdf_path.exists():
             continue
         try:
@@ -118,7 +99,7 @@ def parse_vdf_library_folders(steam_path: str) -> list[str]:
     return folders
 
 
-def read_acf_value(acf_path: Path, key: str) -> str | None:
+def read_acf_value(acf_path, key):
     try:
         content = acf_path.read_text(encoding="utf-8", errors="replace")
         m = re.search(rf'"{key}"\s+"([^"]+)"', content)
@@ -127,7 +108,7 @@ def read_acf_value(acf_path: Path, key: str) -> str | None:
         return None
 
 
-def find_game_path() -> str | None:
+def find_game_path():
     steam_path = find_steam_install_path()
     if not steam_path:
         return None
@@ -147,34 +128,25 @@ def find_game_path() -> str | None:
     return None
 
 
-def get_steam_buildid(game_path: str) -> str | None:
-    game_dir = Path(game_path)
-    steamapps = game_dir.parent.parent
+def get_steam_buildid(game_path):
+    steamapps = Path(game_path).parent.parent
     manifest = steamapps / f"appmanifest_{STEAM_APP_ID}.acf"
-    if manifest.exists():
-        return read_acf_value(manifest, "buildid")
-    return None
+    return read_acf_value(manifest, "buildid") if manifest.exists() else None
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  2. GitHub API
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 2. GitHub API ━━━
 
-def github_api_get(url: str) -> dict | list:
-    req = urllib.request.Request(url, headers={
-        "User-Agent": USER_AGENT,
-        "Accept": "application/vnd.github.v3+json",
-    })
+def github_api_get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github.v3+json"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def fetch_latest_release() -> dict:
+def fetch_latest_release():
     return github_api_get(GITHUB_API_LATEST)
 
 
-def fetch_patcher_latest_version() -> tuple[str, str] | None:
-    """패처 exe가 포함된 릴리즈에서 버전과 URL을 반환."""
+def fetch_patcher_latest_version():
     try:
         releases = github_api_get(GITHUB_API_RELEASES)
         for rel in releases:
@@ -187,15 +159,11 @@ def fetch_patcher_latest_version() -> tuple[str, str] | None:
     return None
 
 
-def find_release_assets(release: dict) -> dict[str, dict]:
+def find_release_assets(release):
     assets = {}
     for a in release.get("assets", []):
         name = a["name"].lower()
-        info = {
-            "name": a["name"],
-            "url": a["browser_download_url"],
-            "size": a.get("size", 0),
-        }
+        info = {"name": a["name"], "url": a["browser_download_url"], "size": a.get("size", 0)}
         if "sha256" in name or "checksum" in name:
             assets["checksums"] = info
         elif "delta" in name and name.endswith(".patch"):
@@ -205,11 +173,9 @@ def find_release_assets(release: dict) -> dict[str, dict]:
     return assets
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  3. 다운로드 + 무결성 검증
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 3. 다운로드 + 검증 ━━━
 
-def download_file(url: str, dest: str, progress_cb=None) -> None:
+def download_file(url, dest, progress_cb=None):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=120) as resp:
         total = int(resp.headers.get("Content-Length", 0))
@@ -225,7 +191,7 @@ def download_file(url: str, dest: str, progress_cb=None) -> None:
                     progress_cb(downloaded, total)
 
 
-def sha256_file(filepath: str) -> str:
+def sha256_file(filepath):
     h = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -233,11 +199,11 @@ def sha256_file(filepath: str) -> str:
     return h.hexdigest()
 
 
-def verify_checksum(filepath: str, expected_hash: str) -> bool:
+def verify_checksum(filepath, expected_hash):
     return sha256_file(filepath).lower() == expected_hash.lower()
 
 
-def download_and_parse_checksums(url: str) -> dict[str, str]:
+def download_and_parse_checksums(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=15) as resp:
         text = resp.read().decode("utf-8")
@@ -249,16 +215,14 @@ def download_and_parse_checksums(url: str) -> dict[str, str]:
     return result
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  4. 패치 상태 관리
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 4. 패치 상태 관리 ━━━
 
 class PatchState:
-    def __init__(self, game_path: str):
+    def __init__(self, game_path):
         self.filepath = Path(game_path) / PATCH_STATE_FILE
         self.data = self._load()
 
-    def _load(self) -> dict:
+    def _load(self):
         if self.filepath.exists():
             try:
                 return json.loads(self.filepath.read_text("utf-8"))
@@ -267,100 +231,76 @@ class PatchState:
         return {}
 
     def save(self):
-        self.filepath.write_text(
-            json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        self.filepath.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     @property
-    def patch_version(self) -> str | None:
+    def patch_version(self):
         return self.data.get("patch_version")
 
     @property
-    def game_buildid(self) -> str | None:
+    def game_buildid(self):
         return self.data.get("game_buildid")
 
-    def is_outdated(self, new_version: str) -> bool:
+    def is_outdated(self, new_version):
         current = self.patch_version
         if not current:
             return True
         return parse_version(current) < parse_version(new_version)
 
-    def game_was_updated(self, current_buildid: str) -> bool:
+    def game_was_updated(self, current_buildid):
         saved = self.game_buildid
         if not saved:
             return False
         return saved != current_buildid
 
-    def update(self, patch_version: str, game_buildid: str | None,
-               bundle_hash: str, files_applied: list[str]):
-        self.data.update({
-            "patch_version": patch_version,
-            "patch_date": datetime.now().isoformat(),
-            "game_buildid": game_buildid,
-            "bundle_hash": bundle_hash,
-            "patcher_version": PATCHER_VERSION,
-            "files_applied": files_applied,
-        })
+    def update(self, patch_version, game_buildid, bundle_hash, files_applied):
+        self.data.update({"patch_version": patch_version, "patch_date": datetime.now().isoformat(), "game_buildid": game_buildid, "bundle_hash": bundle_hash, "patcher_version": PATCHER_VERSION, "files_applied": files_applied})
         self.save()
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  5. 백업 / 복원
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 5. 백업 / 복원 ━━━
 
-def create_backup(game_path: str) -> str | None:
+def create_backup(game_path):
     game = Path(game_path)
     backup_dir = game / BACKUP_DIR_NAME
     backup_dir.mkdir(parents=True, exist_ok=True)
-
     backed_up = []
     bundle = game / BUNDLE_SUBDIR / BUNDLE_FILENAME
     if bundle.exists():
         shutil.copy2(bundle, backup_dir / BUNDLE_FILENAME)
         backed_up.append(BUNDLE_FILENAME)
-
     catalog = game / CATALOG_RELPATH
     if catalog.exists():
         shutil.copy2(catalog, backup_dir / "catalog.json")
         backed_up.append("catalog.json")
-
-    if backed_up:
-        log.info(f"백업 완료: {backed_up}")
-        return str(backup_dir)
-    return None
+    return str(backup_dir) if backed_up else None
 
 
-def restore_backup(game_path: str) -> bool:
+def restore_backup(game_path):
     game = Path(game_path)
     backup_dir = game / BACKUP_DIR_NAME
     if not backup_dir.exists():
         return False
-
     restored = []
     bk_bundle = backup_dir / BUNDLE_FILENAME
     if bk_bundle.exists():
         shutil.copy2(bk_bundle, game / BUNDLE_SUBDIR / BUNDLE_FILENAME)
         restored.append(BUNDLE_FILENAME)
-
     bk_catalog = backup_dir / "catalog.json"
     if bk_catalog.exists():
         shutil.copy2(bk_catalog, game / CATALOG_RELPATH)
         restored.append("catalog.json")
-
     if restored:
         state_file = game / PATCH_STATE_FILE
         if state_file.exists():
             state_file.unlink()
-        log.info(f"복원 완료: {restored}")
         return True
     return False
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  6. LELocalePatch CLI 실행
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 6. LELocalePatch CLI ━━━
 
-def find_bundle_path(game_path: str) -> Path | None:
+def find_bundle_path(game_path):
     bundle = Path(game_path) / BUNDLE_SUBDIR / BUNDLE_FILENAME
     if bundle.exists():
         return bundle
@@ -380,43 +320,29 @@ def run_lelocale_patch(lelocale_exe, bundle_path, action, json_source, progress_
     log.info(f"LELocalePatch 실행: {' '.join(cmd)}")
     if progress_cb:
         progress_cb("LELocalePatch 실행 중...", -1)
-    result = subprocess.run(
-        cmd, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=300,
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"LELocalePatch 실행 실패 (exit code: {result.returncode})\n"
-            f"{result.stderr or result.stdout}"
-        )
+        raise RuntimeError(f"LELocalePatch 실행 실패 (exit code: {result.returncode})\n{result.stderr or result.stdout}")
     log.info(f"LELocalePatch 완료:\n{result.stdout}")
     return result
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  7. 델타 패칭
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 7. 델타 패칭 ━━━
 
-def apply_delta_patch(original, delta, output) -> bool:
+def apply_delta_patch(original, delta, output):
     if not HAS_DETOOLS:
         return False
     try:
-        with open(original, "rb") as fo, \
-             open(delta, "rb") as fd, \
-             open(output, "wb") as fout:
+        with open(original, "rb") as fo, open(delta, "rb") as fd, open(output, "wb") as fout:
             detools.apply_patch(fo, fd, fout)
         return True
-    except Exception as e:
-        log.error(f"델타 패치 실패: {e}")
+    except Exception:
         return False
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  8. 패처 자기 업데이트
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 8. 패처 자기 업데이트 ━━━
 
-def check_patcher_update() -> tuple[bool, str, str]:
-    """Returns: (update_available, latest_version, download_url)."""
+def check_patcher_update():
     try:
         result = fetch_patcher_latest_version()
         if result is None:
@@ -424,14 +350,13 @@ def check_patcher_update() -> tuple[bool, str, str]:
         latest_tag, dl_url = result
         if parse_version(latest_tag) > parse_version(PATCHER_VERSION):
             return (True, latest_tag, dl_url)
-    except Exception as e:
-        log.warning(f"패처 업데이트 확인 실패: {e}")
+    except Exception:
+        pass
     return (False, PATCHER_VERSION, "")
 
 
-def self_update(download_url: str) -> bool:
+def self_update(download_url):
     if not getattr(sys, "frozen", False):
-        log.info("개발 모드 — 자기 업데이트 스킵")
         return False
     current_exe = sys.executable
     try:
@@ -439,27 +364,17 @@ def self_update(download_url: str) -> bool:
         download_file(download_url, new_exe)
         bat_path = current_exe + ".update.bat"
         with open(bat_path, "w") as f:
-            f.write(f"""@echo off
-timeout /t 2 /nobreak >nul
-del "{current_exe}"
-move "{new_exe}" "{current_exe}"
-start "" "{current_exe}"
-del "%~f0"
-""")
-        subprocess.Popen(["cmd", "/c", bat_path],
-                         creationflags=subprocess.CREATE_NO_WINDOW)
+            f.write(f'@echo off\ntimeout /t 2 /nobreak >nul\ndel "{current_exe}"\nmove "{new_exe}" "{current_exe}"\nstart "" "{current_exe}"\ndel "%~f0"\n')
+        subprocess.Popen(["cmd", "/c", bat_path], creationflags=subprocess.CREATE_NO_WINDOW)
         sys.exit(0)
-    except Exception as e:
-        log.error(f"자기 업데이트 실패: {e}")
+    except Exception:
         for tmp in [current_exe + ".new", current_exe + ".update.bat"]:
             if os.path.exists(tmp):
                 os.remove(tmp)
         return False
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  9. 메인 오케스트레이터
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 9. 메인 오케스트레이터 ━━━
 
 class PatchOrchestrator:
     def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None):
@@ -473,25 +388,19 @@ class PatchOrchestrator:
         self._progress(downloaded, total)
         if total > 0:
             pct = downloaded / total * 100
-            mb_dl = downloaded / 1024 / 1024
-            mb_tot = total / 1024 / 1024
-            self._status(f"다운로드 중... {mb_dl:.1f}MB / {mb_tot:.1f}MB ({pct:.0f}%)")
+            self._status(f"다운로드 중... {downloaded // 1024 // 1024}MB / {total // 1024 // 1024}MB ({pct:.0f}%)")
 
-    def check_game_updated(self) -> bool:
+    def check_game_updated(self):
         current = get_steam_buildid(self.game_path)
         if current and self.state.game_was_updated(current):
-            self._log(
-                f"⚠️ 게임 업데이트 감지! "
-                f"(저장: {self.state.game_buildid} → 현재: {current})"
-            )
+            self._log(f"⚠️ 게임 업데이트 감지! (저장: {self.state.game_buildid} → 현재: {current})")
             return True
         return False
 
-    def run(self) -> dict:
+    def run(self):
         result = {"success": False, "version": "", "files": [], "message": ""}
         try:
             self._status("GitHub에서 최신 릴리즈 확인 중...")
-            self._log("GitHub Releases API 호출...")
             release = fetch_latest_release()
             tag = release.get("tag_name", "unknown")
             self._log(f"최신 릴리즈: {tag}")
@@ -509,10 +418,7 @@ class PatchOrchestrator:
 
             assets = find_release_assets(release)
             if "patch_bundle" not in assets:
-                raise RuntimeError(
-                    f"릴리즈에서 패치 번들(.zip)을 찾을 수 없습니다.\n"
-                    f"https://github.com/{GITHUB_REPO}/releases"
-                )
+                raise RuntimeError(f"릴리즈에서 패치 번들(.zip)을 찾을 수 없습니다.\nhttps://github.com/{GITHUB_REPO}/releases")
 
             bundle_asset = assets["patch_bundle"]
             size_mb = bundle_asset["size"] / 1024 / 1024
@@ -522,30 +428,23 @@ class PatchOrchestrator:
             if "checksums" in assets:
                 try:
                     checksums = download_and_parse_checksums(assets["checksums"]["url"])
-                    self._log(f"체크섬 로드: {len(checksums)}개 파일")
-                except Exception as e:
-                    self._log(f"⚠️ 체크섬 다운로드 실패 (무시): {e}")
+                except Exception:
+                    pass
 
             bundle_path = find_bundle_path(self.game_path)
             if not bundle_path:
-                raise RuntimeError(
-                    "한국어 로컬라이제이션 번들을 찾을 수 없습니다.\n"
-                    "게임에서 언어를 한국어로 한번 설정한 후 다시 시도해주세요.\n"
-                    f"예상 경로: {Path(self.game_path) / BUNDLE_SUBDIR}"
-                )
+                raise RuntimeError("한국어 로컬라이제이션 번들을 찾을 수 없습니다.\n게임에서 언어를 한국어로 한번 설정한 후 다시 시도해주세요.")
             self._log(f"번들: {bundle_path}")
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 use_delta = False
                 if HAS_DETOOLS and "delta_patch" in assets and self.state.patch_version:
-                    self._log("델타 패치 시도...")
                     delta_asset = assets["delta_patch"]
                     delta_path = os.path.join(tmpdir, delta_asset["name"])
                     download_file(delta_asset["url"], delta_path, self._dl_progress)
                     new_bundle = os.path.join(tmpdir, "patched_bundle")
                     use_delta = apply_delta_patch(str(bundle_path), delta_path, new_bundle)
                     if use_delta:
-                        self._log("✅ 델타 패치 성공!")
                         shutil.copy2(new_bundle, str(bundle_path))
 
                 if not use_delta:
@@ -555,12 +454,11 @@ class PatchOrchestrator:
                     self._log("다운로드 완료!")
 
                     if bundle_asset["name"] in checksums:
-                        self._status("무결성 검증 중...")
                         if not verify_checksum(zip_path, checksums[bundle_asset["name"]]):
                             raise RuntimeError("체크섬 불일치! 다시 시도해주세요.")
                         self._log("✅ SHA256 검증 통과")
 
-                    self._status("패치 번들 압축 해제 중...")
+                    self._status("압축 해제 중...")
                     extract_dir = os.path.join(tmpdir, "extracted")
                     os.makedirs(extract_dir)
                     with zipfile.ZipFile(zip_path, "r") as zf:
@@ -570,8 +468,7 @@ class PatchOrchestrator:
                     json_source = self._find_json_source(extract_dir)
 
                     self._status("기존 파일 백업 중...")
-                    bk = create_backup(self.game_path)
-                    self._log(f"백업: {bk or '(없음)'}")
+                    create_backup(self.game_path)
 
                     if lelocale_exe:
                         self._status("LELocalePatch로 번들 패치 중...")
@@ -596,7 +493,6 @@ class PatchOrchestrator:
             result["message"] = str(e)
             self._log(f"❌ 오류: {e}")
             self._status("❌ 오류 발생")
-            log.exception("Patch failed")
         return result
 
     def _find_file(self, root_dir, filename_lower):
@@ -625,7 +521,6 @@ class PatchOrchestrator:
         return []
 
     def _apply_direct_copy(self, extract_dir):
-        self._status("직접 복사 모드 적용 중...")
         applied = []
         dest_base = Path(self.game_path)
         for root, dirs, files in os.walk(extract_dir):
@@ -638,26 +533,17 @@ class PatchOrchestrator:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, target)
                 applied.append(str(rel))
-        self._log(f"직접 복사 완료: {len(applied)}개 파일")
         return applied
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  10. GUI (tkinter)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 10. GUI ━━━
 
 def run_gui():
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
 
     class PatcherApp:
-        BG = "#0f0f1a"
-        BG2 = "#161628"
-        FG = "#e0e0e0"
-        ACCENT = "#ff4d6a"
-        GREEN = "#4cdf8b"
-        WARN = "#ffa726"
-        ENTRY_BG = "#1c1c3a"
+        BG, BG2, FG, ACCENT, WARN, ENTRY_BG = "#0f0f1a", "#161628", "#e0e0e0", "#ff4d6a", "#ffa726", "#1c1c3a"
 
         def __init__(self, root):
             self.root = root
@@ -669,7 +555,7 @@ def run_gui():
             self.status_text = tk.StringVar(value="대기 중...")
             self._build_ui()
             self._auto_detect()
-            self._check_patcher_update_bg()
+            self._check_update_bg()
 
         def _build_ui(self):
             s = ttk.Style()
@@ -691,8 +577,7 @@ def run_gui():
             ttk.Label(fp, text="게임 경로", style="Sub.TLabel").pack(anchor="w")
             fe = tk.Frame(fp, bg=self.BG)
             fe.pack(fill="x", pady=(3, 0))
-            self.entry_path = tk.Entry(fe, textvariable=self.game_path, font=("Consolas", 10),
-                                       bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG, relief="flat", bd=5)
+            self.entry_path = tk.Entry(fe, textvariable=self.game_path, font=("Consolas", 10), bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG, relief="flat", bd=5)
             self.entry_path.pack(side="left", fill="x", expand=True)
             ttk.Button(fe, text="찾기", command=self._browse).pack(side="right", padx=(5, 0))
 
@@ -708,9 +593,7 @@ def run_gui():
             self.do_backup = tk.BooleanVar(value=True)
             self.do_force = tk.BooleanVar(value=False)
             for text, var in [("적용 전 기존 파일 백업", self.do_backup), ("강제 재적용 (같은 버전이어도)", self.do_force)]:
-                tk.Checkbutton(fo, text=text, variable=var, bg=self.BG, fg=self.FG,
-                               selectcolor=self.ENTRY_BG, activebackground=self.BG,
-                               activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w")
+                tk.Checkbutton(fo, text=text, variable=var, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w")
 
             fp2 = tk.Frame(self.root, bg=self.BG)
             fp2.pack(fill="x", padx=24, pady=(10, 5))
@@ -720,8 +603,7 @@ def run_gui():
 
             fl = tk.Frame(self.root, bg=self.BG)
             fl.pack(fill="both", expand=True, padx=24, pady=(5, 10))
-            self.log_text = tk.Text(fl, height=7, bg=self.ENTRY_BG, fg="#7a7a9a",
-                                    font=("Consolas", 8), relief="flat", bd=5, state="disabled")
+            self.log_text = tk.Text(fl, height=7, bg=self.ENTRY_BG, fg="#7a7a9a", font=("Consolas", 8), relief="flat", bd=5, state="disabled")
             self.log_text.pack(fill="both", expand=True)
 
             fb = tk.Frame(self.root, bg=self.BG)
@@ -772,7 +654,7 @@ def run_gui():
                 self.lbl_patch.configure(text="  📦 패치 미적용")
                 self.lbl_game.configure(text=f"  🎮 게임 빌드: {bid or '?'}")
 
-        def _check_patcher_update_bg(self):
+        def _check_update_bg(self):
             def check():
                 avail, ver, url = check_patcher_update()
                 if avail:
@@ -780,8 +662,7 @@ def run_gui():
             threading.Thread(target=check, daemon=True).start()
 
         def _prompt_update(self, ver, url):
-            if messagebox.askyesno("패처 업데이트",
-                                   f"새 패처 버전: {ver}\n현재: v{PATCHER_VERSION}\n\n업데이트?"):
+            if messagebox.askyesno("패처 업데이트", f"새 패처 버전: {ver}\n현재: v{PATCHER_VERSION}\n\n업데이트?"):
                 self_update(url)
 
         def _browse(self):
@@ -801,12 +682,7 @@ def run_gui():
             threading.Thread(target=self._run_patch, args=(gp,), daemon=True).start()
 
         def _run_patch(self, gp):
-            orch = PatchOrchestrator(
-                gp,
-                log_cb=lambda m: self.root.after(0, self._log, m),
-                status_cb=lambda m: self.root.after(0, self._status, m),
-                progress_cb=lambda c, t: self.root.after(0, self._prog, c, t),
-            )
+            orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t))
             if self.do_force.get():
                 orch.state.data.pop("patch_version", None)
             res = orch.run()
@@ -830,7 +706,6 @@ def run_gui():
                 return
             if restore_backup(gp):
                 self._log("✅ 복원 완료")
-                self._status("원본 파일 복원됨")
                 self._refresh_info(gp)
                 messagebox.showinfo("완료", "복원 완료!")
             else:
@@ -841,24 +716,19 @@ def run_gui():
     root.mainloop()
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  11. CLI 모드
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ 11. CLI ━━━
 
 def run_cli():
     import argparse
     parser = argparse.ArgumentParser(description="Last Epoch 한국어 번역패치")
     parser.add_argument("--path", help="게임 폴더 경로")
-    parser.add_argument("--force", action="store_true", help="강제 재적용")
-    parser.add_argument("--restore", action="store_true", help="백업 복원")
-    parser.add_argument("--status", action="store_true", help="현재 패치 상태")
-    parser.add_argument("--self-update", action="store_true", help="패처 업데이트")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--restore", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--self-update", action="store_true")
     args = parser.parse_args()
 
-    print(f"\n{'=' * 55}")
-    print(f"  Last Epoch 한국어 번역패치 v{PATCHER_VERSION}")
-    print(f"  github.com/{GITHUB_REPO}")
-    print(f"{'=' * 55}\n")
+    print(f"\n{'=' * 55}\n  Last Epoch 한국어 번역패치 v{PATCHER_VERSION}\n  github.com/{GITHUB_REPO}\n{'=' * 55}\n")
 
     if args.self_update:
         avail, ver, url = check_patcher_update()
@@ -891,9 +761,6 @@ def run_cli():
         print(f"  빌드: {bid or '?'}")
         if st.patch_version:
             print(f"  패치: {st.patch_version} ({st.data.get('patch_date', '?')[:10]})")
-            print(f"  파일: {len(st.data.get('files_applied', []))}개")
-            if bid and st.game_was_updated(bid):
-                print("  ⚠️ 게임 업데이트 감지 — 재적용 권장!")
         else:
             print("  패치 미적용")
         return
@@ -908,26 +775,17 @@ def run_cli():
             bar = "█" * int(pct // 2) + "░" * (50 - int(pct // 2))
             print(f"\r  [{bar}] {pct:.0f}%", end="", flush=True)
 
-    orch = PatchOrchestrator(gp,
-        log_cb=lambda m: print(f"  {m}"),
-        status_cb=lambda m: print(f"\n  >> {m}"),
-        progress_cb=cli_prog)
+    orch = PatchOrchestrator(gp, log_cb=lambda m: print(f"  {m}"), status_cb=lambda m: print(f"\n  >> {m}"), progress_cb=cli_prog)
     if args.force:
         orch.state.data.pop("patch_version", None)
-
     res = orch.run()
     print()
     if res["success"]:
-        print(f"\n{'=' * 55}")
-        print(f"  ✅ {res['message']}")
-        print(f"  게임을 실행하세요!")
-        print(f"{'=' * 55}")
+        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임 실행해서 한국어 즐기세요! 🎮\n{'=' * 55}")
     else:
         print(f"\n  ❌ {res['message']}")
         sys.exit(1)
 
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def main():
     if "--cli" in sys.argv or any(a.startswith("--") and a != "--cli" for a in sys.argv[1:]):
@@ -937,7 +795,6 @@ def main():
             import tkinter
             run_gui()
         except ImportError:
-            print("tkinter 없음 — CLI 모드\n")
             run_cli()
 
 if __name__ == "__main__":
