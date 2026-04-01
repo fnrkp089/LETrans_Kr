@@ -119,3 +119,7 @@ pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" patcher.py
 ## 라이선스
 
 MIT
+
+## Library
+- **LELocalePatch** : https://github.com/aianlinb/LELocalePatch 
+
