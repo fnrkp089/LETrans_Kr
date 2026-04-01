@@ -1,5 +1,5 @@
 """
-Last Epoch 한국어 번역패치 원클릭 적용기
+Last Epoch 한국어 번역패치
 GitHub: fnrkp089/LETrans_Kr
 """
 
@@ -359,13 +359,34 @@ def self_update(download_url):
     if not getattr(sys, "frozen", False):
         return False
     current_exe = sys.executable
+    current_pid = os.getpid()
     try:
         new_exe = current_exe + ".new"
         download_file(download_url, new_exe)
         bat_path = current_exe + ".update.bat"
+        # 핵심: 자동 재시작 안 함 (PyInstaller _MEI 폴더 충돌 방지)
+        # taskkill로 확실히 종료 → 교체 → 메시지만 표시
         with open(bat_path, "w") as f:
-            f.write(f'@echo off\ntimeout /t 2 /nobreak >nul\ndel "{current_exe}"\nmove "{new_exe}" "{current_exe}"\nstart "" "{current_exe}"\ndel "%~f0"\n')
-        subprocess.Popen(["cmd", "/c", bat_path], creationflags=subprocess.CREATE_NO_WINDOW)
+            f.write(f"""@echo off
+chcp 65001 >nul
+echo 패처 업데이트 중...
+taskkill /PID {current_pid} /F >nul 2>&1
+timeout /t 3 /nobreak >nul
+del "{current_exe}" >nul 2>&1
+if exist "{current_exe}" (
+    timeout /t 3 /nobreak >nul
+    del "{current_exe}" >nul 2>&1
+)
+move "{new_exe}" "{current_exe}"
+echo.
+echo ============================================
+echo   업데이트 완료! 패처를 다시 실행해주세요.
+echo ============================================
+echo.
+pause
+del "%~f0"
+""")
+        subprocess.Popen(["cmd", "/c", bat_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
         sys.exit(0)
     except Exception:
         for tmp in [current_exe + ".new", current_exe + ".update.bat"]:
@@ -668,7 +689,7 @@ def run_gui():
             threading.Thread(target=check, daemon=True).start()
 
         def _prompt_update(self, ver, url):
-            if messagebox.askyesno("패처 업데이트", f"새 패처 버전: {ver}\n현재: v{PATCHER_VERSION}\n\n업데이트?"):
+            if messagebox.askyesno("패처 업데이트", f"새 패처 버전: {ver}\n현재: v{PATCHER_VERSION}\n\n업데이트 후 패처를 다시 실행해야 합니다.\n업데이트하시겠습니까?"):
                 self_update(url)
 
         def _browse(self):
@@ -787,7 +808,7 @@ def run_cli():
     res = orch.run()
     print()
     if res["success"]:
-        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임 실행해서 한국어 즐기세요! 🎮\n{'=' * 55}")
+        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임을 실행해 주세요\n{'=' * 55}")
     else:
         print(f"\n  ❌ {res['message']}")
         sys.exit(1)
