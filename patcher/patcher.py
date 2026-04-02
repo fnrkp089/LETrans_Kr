@@ -1,5 +1,5 @@
 """
-Last Epoch 한국어 번역패치 원클릭
+Last Epoch 한국어 번역패치
 GitHub: fnrkp089/LETrans_Kr
 """
 
@@ -45,7 +45,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.4.3"
+PATCHER_VERSION = "0.5.0"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -151,17 +151,6 @@ def github_api_get(url):
 
 def fetch_latest_release():
     return github_api_get(GITHUB_API_LATEST)
-
-def fetch_patcher_latest_version():
-    try:
-        for rel in github_api_get(GITHUB_API_RELEASES):
-            for asset in rel.get("assets", []):
-                name = asset["name"].lower()
-                if "patcher" in name and name.endswith(".exe"):
-                    return (rel["tag_name"], asset["browser_download_url"])
-    except Exception:
-        pass
-    return None
 
 def find_release_assets(release):
     assets = {}
@@ -334,60 +323,7 @@ def apply_delta_patch(original, delta, output):
         return False
 
 
-# ━━━ 8. 패처 자기 업데이트 ━━━
-
-def check_patcher_update():
-    try:
-        result = fetch_patcher_latest_version()
-        if result is None:
-            return (False, PATCHER_VERSION, "")
-        latest_tag, dl_url = result
-        if parse_version(latest_tag) > parse_version(PATCHER_VERSION):
-            return (True, latest_tag, dl_url)
-    except Exception:
-        pass
-    return (False, PATCHER_VERSION, "")
-
-def self_update(download_url):
-    if not getattr(sys, "frozen", False):
-        return False
-    current_exe = sys.executable
-    current_pid = os.getpid()
-    try:
-        new_exe = current_exe + ".new"
-        download_file(download_url, new_exe)
-        bat_path = current_exe + ".update.bat"
-        # 핵심: 자동 재시작 안 함 (PyInstaller _MEI 폴더 충돌 방지)
-        # taskkill로 확실히 종료 → 교체 → 메시지만 표시
-        with open(bat_path, "w") as f:
-            f.write(f"""@echo off
-echo Updating patcher...
-taskkill /PID {current_pid} /F >nul 2>&1
-timeout /t 3 /nobreak >nul
-del "{current_exe}" >nul 2>&1
-if exist "{current_exe}" (
-    timeout /t 3 /nobreak >nul
-    del "{current_exe}" >nul 2>&1
-)
-move "{new_exe}" "{current_exe}"
-echo.
-echo ============================================
-echo   Update complete! Please restart the patcher.
-echo ============================================
-echo.
-pause
-del "%~f0"
-""")
-        subprocess.Popen(["cmd", "/c", bat_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
-        sys.exit(0)
-    except Exception:
-        for tmp in [current_exe + ".new", current_exe + ".update.bat"]:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        return False
-
-
-# ━━━ 9. 메인 오케스트레이터 ━━━
+# ━━━ 8. 메인 오케스트레이터 ━━━
 
 class PatchOrchestrator:
     def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None):
@@ -555,7 +491,7 @@ class PatchOrchestrator:
         return applied
 
 
-# ━━━ 10. GUI ━━━
+# ━━━ 9. GUI ━━━
 
 def run_gui():
     import tkinter as tk
@@ -575,7 +511,6 @@ def run_gui():
             self.status_text = tk.StringVar(value="대기 중...")
             self._build_ui()
             self._auto_detect()
-            self._check_update_bg()
 
         def _build_ui(self):
             s = ttk.Style()
@@ -674,17 +609,6 @@ def run_gui():
                 self.lbl_patch.configure(text="  📦 패치 미적용")
                 self.lbl_game.configure(text=f"  🎮 게임 빌드: {bid or '?'}")
 
-        def _check_update_bg(self):
-            def check():
-                avail, ver, url = check_patcher_update()
-                if avail:
-                    self.root.after(0, lambda: self._prompt_update(ver, url))
-            threading.Thread(target=check, daemon=True).start()
-
-        def _prompt_update(self, ver, url):
-            if messagebox.askyesno("패처 업데이트", f"새 패처 버전: {ver}\n현재: v{PATCHER_VERSION}\n\n업데이트 후 패처를 다시 실행해야 합니다.\n업데이트하시겠습니까?"):
-                self_update(url)
-
         def _browse(self):
             p = filedialog.askdirectory(title="Last Epoch 폴더")
             if p:
@@ -736,7 +660,7 @@ def run_gui():
     root.mainloop()
 
 
-# ━━━ 11. CLI ━━━
+# ━━━ 10. CLI ━━━
 
 def run_cli():
     import argparse
@@ -745,20 +669,9 @@ def run_cli():
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--restore", action="store_true")
     parser.add_argument("--status", action="store_true")
-    parser.add_argument("--self-update", action="store_true")
     args = parser.parse_args()
 
     print(f"\n{'=' * 55}\n  Last Epoch 한국어 번역패치 v{PATCHER_VERSION}\n  github.com/{GITHUB_REPO}\n{'=' * 55}\n")
-
-    if args.self_update:
-        avail, ver, url = check_patcher_update()
-        if avail:
-            print(f"새 버전: {ver}")
-            if input("업데이트? (Y/n): ").strip().lower() != "n":
-                self_update(url)
-        else:
-            print("최신 버전입니다.")
-        return
 
     gp = args.path
     if not gp:
@@ -801,7 +714,7 @@ def run_cli():
     res = orch.run()
     print()
     if res["success"]:
-        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임을 실행하세요 \n{'=' * 55}")
+        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임을 실행해주세요\n{'=' * 55}")
     else:
         print(f"\n  ❌ {res['message']}")
         sys.exit(1)
