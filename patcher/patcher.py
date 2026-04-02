@@ -1,5 +1,5 @@
 """
-Last Epoch 한국어 번역패치
+Last Epoch 한국어 번역패치 원클릭
 GitHub: fnrkp089/LETrans_Kr
 """
 
@@ -361,8 +361,7 @@ def self_update(download_url):
         # taskkill로 확실히 종료 → 교체 → 메시지만 표시
         with open(bat_path, "w") as f:
             f.write(f"""@echo off
-chcp 65001 >nul
-echo 패처 업데이트 중...
+echo Updating patcher...
 taskkill /PID {current_pid} /F >nul 2>&1
 timeout /t 3 /nobreak >nul
 del "{current_exe}" >nul 2>&1
@@ -373,7 +372,7 @@ if exist "{current_exe}" (
 move "{new_exe}" "{current_exe}"
 echo.
 echo ============================================
-echo   업데이트 완료! 패처를 다시 실행해주세요.
+echo   Update complete! Please restart the patcher.
 echo ============================================
 echo.
 pause
@@ -802,7 +801,7 @@ def run_cli():
     res = orch.run()
     print()
     if res["success"]:
-        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임을 실행해주세요\n{'=' * 55}")
+        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임을 실행하세요 \n{'=' * 55}")
     else:
         print(f"\n  ❌ {res['message']}")
         sys.exit(1)
