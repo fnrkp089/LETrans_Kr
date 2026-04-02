@@ -9,21 +9,23 @@
 | 기능 | 설명 |
 |------|------|
 | **Steam 자동 감지** | 레지스트리 + `libraryfolders.vdf` + `appmanifest_899770.acf` |
-| **LELocalePatch 연동** | Unity 에셋 번들 직접 패치 (catalog.json CRC 자동 처리) |
+| **LELocalePatch 연동** | Unity 에셋 번들 직접 패치 (catalog.bin CRC 자동 처리) |
 | **SHA256 검증** | 다운로드 파일 무결성 검증 |
 | **버전 관리** | `kr_patch_state.json`으로 중복 적용 방지 |
 | **게임 업데이트 감지** | Steam buildid 추적 → 자동 재적용 안내 |
 | **델타 패칭** | `detools` (bsdiff) 기반 차분 패치 지원 |
 | **패처 자동 업데이트** | 새 버전 감지 시 자동 교체 |
-| **백업 / 복원** | 원본 번들 + catalog.json 백업 |
+| **백업 / 복원** | 원본 번들 + catalog.bin 백업 |
 | **GUI + CLI** | tkinter GUI (기본) / 커맨드라인 모드 |
 
 ## 사용법
 
 ### GUI (기본)
+
 `LastEpoch_KR_Patcher.exe` 실행 → 🚀 패치 적용 클릭
 
 ### CLI
+
 ```bash
 # 자동 감지 + 적용
 python patcher.py --cli
@@ -44,35 +46,41 @@ python patcher.py --restore
 python patcher.py --self-update
 ```
 
-## 릴리즈 준비 (관리자용)
+## 릴리즈 (관리자용)
+
+### 번역만 업데이트 (대부분)
 
 ```bash
-# 1. 번역 JSON + LELocalePatch.exe로 릴리즈 번들 생성
-python prepare_release.py translations/ LELocalePatch.exe -v v1.0.0
+# 1. 릴리즈 에셋 생성
+python prepare_release.py ko_fix_origin LELocalePatch.exe -v v0.4.3
 
-# 2. 델타 패치도 생성하려면
-python prepare_release.py translations/ LELocalePatch.exe \
-    -v v1.1.0 \
-    --prev-bundle old_bundle.bundle \
-    --new-bundle new_bundle.bundle
+# 2. release/ 폴더의 zip + SHA256SUMS를 GitHub Release에 업로드
+#    exe는 올리지 않음 (기존 exe가 자동으로 최신 번역을 다운받음)
+```
 
-# 3. release/ 폴더에 생성된 파일들을 GitHub Release에 업로드
-gh release create v1.0.0 release/*
+### 패처 코드도 바꿨을 때
+
+```bash
+# 1. patcher.py 수정 + PATCHER_VERSION 올리기
+# 2. 레포에 push
+# 3. GitHub에 릴리즈 만들기 (zip + SHA256SUMS)
+# 4. Actions 탭 → "Build Patcher EXE" → Run workflow → tag 입력
+#    → exe가 해당 릴리즈에 자동 첨부됨
 ```
 
 ### 릴리즈 에셋 구조
-```
-kr-patch-v1.0.0.zip          # 메인 패치 번들
-├── LELocalePatch.exe
-├── translations/
-│   ├── Skills.json
-│   ├── Properties.json
-│   └── ...
-└── manifest.json
 
-kr-delta-v1.0.0.patch        # (선택) 델타 패치
-SHA256SUMS                    # 체크섬
-LastEpoch_KR_Patcher.exe      # 패처 (GitHub Actions 자동 빌드)
+```
+kr-patch-v0.4.3.zip           # 메인 패치 번들
+├── LELocalePatch.exe
+├── Skills_ko.json
+├── Properties_ko.json
+├── Abilities_ko.json
+├── UI_ko.json
+└── ...                        # 총 22개 JSON (플랫 구조)
+
+SHA256SUMS                     # 체크섬
+LastEpoch_KR_Patcher.exe       # 패처 (수동 빌드 시에만 첨부)
 ```
 
 ## 패치 플로우
@@ -95,8 +103,8 @@ LastEpoch_KR_Patcher.exe      # 패처 (GitHub Actions 자동 빌드)
   │      │
   ├─ 전체 zip 다운로드
   ├─ SHA256 검증
-  ├─ 백업 (번들 + catalog.json)
-  ├─ LELocalePatch.exe 실행 (또는 직접 복사 폴백)
+  ├─ 백업 (번들 + catalog.bin)
+  ├─ LELocalePatch.exe import 실행
   ├─ 상태 저장 (버전, buildid, hash)
   │
   [완료]
@@ -105,11 +113,12 @@ LastEpoch_KR_Patcher.exe      # 패처 (GitHub Actions 자동 빌드)
 ## 빌드
 
 ```bash
-pip install pyinstaller detools
-pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" patcher.py
+pip install pyinstaller detools certifi
+pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" \
+    --hidden-import certifi --collect-data certifi --clean patcher.py
 ```
 
-또는 GitHub Actions에서 릴리즈 발행 시 자동 빌드됨.
+또는 GitHub Actions에서 수동 트리거로 빌드 (패처 코드 변경 시에만).
 
 ## 선행 조건
 
@@ -121,5 +130,5 @@ pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" patcher.py
 MIT
 
 ## Library
-- **LELocalePatch** : https://github.com/aianlinb/LELocalePatch 
 
+- **LELocalePatch** : https://github.com/aianlinb/LELocalePatch
