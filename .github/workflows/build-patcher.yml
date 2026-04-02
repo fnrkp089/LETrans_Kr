@@ -1,9 +1,13 @@
 name: Build Patcher EXE
 
+# 패처 코드(patcher.py)가 바뀔 때만 수동으로 실행!
+# 번역 데이터만 올릴 때는 실행하지 않음.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'exe를 첨부할 릴리즈 tag (예: v0.4.1)'
+        required: true
 
 permissions:
   contents: write
@@ -28,14 +32,7 @@ jobs:
           pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" --hidden-import certifi --collect-data certifi --clean patcher.py
 
       - name: Upload to Release
-        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.release_tag }}
           files: patcher/dist/LastEpoch_KR_Patcher.exe
-
-      - name: Upload artifact (manual)
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: LastEpoch_KR_Patcher
-          path: patcher/dist/LastEpoch_KR_Patcher.exe
