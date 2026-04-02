@@ -41,18 +41,11 @@ try:
 except ImportError:
     HAS_DETOOLS = False
 
-# Windows DPI 스케일링 수정 (Win11에서 버튼 잘림 방지)
-try:
-    import ctypes
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    pass
-
 # ─── 상수 ────────────────────────────────────────────────
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.4.0"
+PATCHER_VERSION = "0.4.1"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -576,7 +569,8 @@ def run_gui():
             self.root = root
             self.root.title(f"Last Epoch 한국어 번역패치 v{PATCHER_VERSION}")
             self.root.geometry("600x580")
-            self.root.resizable(False, False)
+            self.root.resizable(True, True)
+            self.root.minsize(500, 400)
             self.root.configure(bg=self.BG)
             self.game_path = tk.StringVar()
             self.status_text = tk.StringVar(value="대기 중...")
@@ -808,7 +802,7 @@ def run_cli():
     res = orch.run()
     print()
     if res["success"]:
-        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임을 실행해 주세요\n{'=' * 55}")
+        print(f"\n{'=' * 55}\n  ✅ {res['message']}\n  게임을 실행해주세요\n{'=' * 55}")
     else:
         print(f"\n  ❌ {res['message']}")
         sys.exit(1)
