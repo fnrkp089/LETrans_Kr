@@ -45,7 +45,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.5.0"
+PATCHER_VERSION = "0.6.0"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -511,6 +511,7 @@ def run_gui():
             self.status_text = tk.StringVar(value="대기 중...")
             self._build_ui()
             self._auto_detect()
+            self._check_new_patch_bg()
 
         def _build_ui(self):
             s = ttk.Style()
@@ -614,6 +615,32 @@ def run_gui():
             if p:
                 self.game_path.set(p)
                 self._refresh_info(p)
+
+        def _check_new_patch_bg(self):
+            """백그라운드에서 새 번역 업데이트 확인."""
+            def check():
+                try:
+                    gp = self.game_path.get().strip()
+                    if not gp:
+                        return
+                    state = PatchState(gp)
+                    release = fetch_latest_release()
+                    tag = release.get("tag_name", "")
+                    if state.is_outdated(tag):
+                        self.root.after(0, lambda: self._notify_new_patch(tag, state.patch_version))
+                except Exception:
+                    pass
+            threading.Thread(target=check, daemon=True).start()
+
+        def _notify_new_patch(self, new_ver, current_ver):
+            """새 번역 업데이트 알림 표시."""
+            if current_ver:
+                msg = f"  🔔 새 번역 업데이트 발견! ({current_ver} → {new_ver}) — 패치 적용을 눌러주세요"
+            else:
+                msg = f"  🔔 번역패치 {new_ver} 사용 가능 — 패치 적용을 눌러주세요"
+            self.lbl_game.configure(text=msg, style="Warn.TLabel")
+            self._log(msg.strip())
+            self._status("새 번역 업데이트가 있습니다!")
 
         def _start(self):
             gp = self.game_path.get().strip()
