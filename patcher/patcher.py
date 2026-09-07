@@ -1,9 +1,11 @@
 """
-Last Epoch 한국어 번역패치
+Last Epoch 한국어 번역패치 원클릭 적용기
 GitHub: fnrkp089/LETrans_Kr
 """
 
 import os
+from workbench_common import write_json, atomic_write, workspace_lock
+from locale_runner import import_locale, run_checked
 import re
 import sys
 import json
@@ -28,7 +30,7 @@ except Exception:
     try:
         SSL_CONTEXT = ssl.create_default_context()
     except Exception:
-        SSL_CONTEXT = ssl._create_unverified_context()
+        raise RuntimeError("TLS 인증서 초기화 실패. 인증서 설정 확인 필요")
 
 try:
     import winreg
@@ -45,7 +47,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.6.0"
+PATCHER_VERSION = "0.6.1"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -161,7 +163,7 @@ def find_release_assets(release):
             assets["checksums"] = info
         elif "delta" in name and name.endswith(".patch"):
             assets["delta_patch"] = info
-        elif name.endswith(".zip"):
+        elif name.startswith("kr-patch-") and name.endswith(".zip"):
             assets["patch_bundle"] = info
     return assets
 
@@ -221,7 +223,7 @@ class PatchState:
         return {}
 
     def save(self):
-        self.filepath.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        write_json(self.filepath, self.data)
 
     @property
     def patch_version(self):
@@ -248,41 +250,93 @@ class PatchState:
 
 # ━━━ 5. 백업 / 복원 ━━━
 
+def _backup_files(game, backup_dir, metadata):
+    names = metadata.get('files') or {
+        BUNDLE_FILENAME: {'path': str(Path(BUNDLE_SUBDIR) / BUNDLE_FILENAME)},
+        'catalog.bin': {'path': str(CATALOG_RELPATH)},
+    }
+    pairs = []
+    for name, record in names.items():
+        saved = (backup_dir / name).resolve()
+        saved.relative_to(backup_dir.resolve())
+        target = (game / record['path']).resolve()
+        target.relative_to(game.resolve())
+        if not saved.is_file():
+            raise RuntimeError(f'불완전한 백업: {name}')
+        if record.get('sha256') and sha256_file(saved) != record['sha256']:
+            raise RuntimeError(f'백업 해시 불일치: {name}')
+        pairs.append((saved, target))
+    if len(pairs) != 2:
+        raise RuntimeError('bundle/catalog 백업 쌍이 필요함')
+    return pairs
+
+
 def create_backup(game_path):
-    game = Path(game_path)
+    game = Path(game_path).resolve()
     backup_dir = game / BACKUP_DIR_NAME
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backed_up = []
-    bundle = game / BUNDLE_SUBDIR / BUNDLE_FILENAME
-    if bundle.exists():
-        shutil.copy2(bundle, backup_dir / BUNDLE_FILENAME)
-        backed_up.append(BUNDLE_FILENAME)
-    catalog = game / CATALOG_RELPATH
-    if catalog.exists():
-        shutil.copy2(catalog, backup_dir / "catalog.bin")
-        backed_up.append("catalog.bin")
-    return str(backup_dir) if backed_up else None
+    buildid = get_steam_buildid(game_path)
+    metadata_path = backup_dir / 'backup_state.json'
+    bundle = find_bundle_path(game)
+    if bundle is None:
+        raise FileNotFoundError('게임 번들 없음')
+    catalog = next((bundle.parent.parent / name for name in ['catalog.bin', 'catalog.json', 'catalog.bundle']
+                    if (bundle.parent.parent / name).is_file()), None)
+    if catalog is None:
+        raise FileNotFoundError('게임 catalog 없음')
+    with workspace_lock(bundle.parent.parent):
+        if backup_dir.exists():
+            metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.exists() else {}
+            same_build = metadata.get('buildid') == buildid if metadata else not PatchState(game_path).game_was_updated(buildid)
+            if same_build:
+                pairs = _backup_files(game, backup_dir, metadata)
+                if not metadata:
+                    write_json(metadata_path, {'buildid': buildid, 'legacy': True,
+                        'files': {saved.name: {'path': str(target.relative_to(game)), 'sha256': sha256_file(saved)}
+                                  for saved, target in pairs}})
+                return str(backup_dir)
+        with tempfile.TemporaryDirectory(prefix='.kr-backup-', dir=game) as tmp:
+            stage = Path(tmp) / 'backup'; stage.mkdir()
+            files = {}
+            for path in [bundle, catalog]:
+                shutil.copy2(path, stage / path.name)
+                files[path.name] = {'path': str(path.relative_to(game)), 'sha256': sha256_file(stage / path.name)}
+            write_json(stage / 'backup_state.json', {'buildid': buildid, 'files': files})
+            archive = None
+            if backup_dir.exists():
+                archive = game / (BACKUP_DIR_NAME + '_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+                backup_dir.rename(archive)
+            try:
+                stage.rename(backup_dir)
+            except BaseException:
+                if archive:
+                    archive.rename(backup_dir)
+                raise
+    return str(backup_dir)
+
 
 def restore_backup(game_path):
-    game = Path(game_path)
+    game = Path(game_path).resolve()
     backup_dir = game / BACKUP_DIR_NAME
     if not backup_dir.exists():
         return False
-    restored = []
-    bk_bundle = backup_dir / BUNDLE_FILENAME
-    if bk_bundle.exists():
-        shutil.copy2(bk_bundle, game / BUNDLE_SUBDIR / BUNDLE_FILENAME)
-        restored.append(BUNDLE_FILENAME)
-    bk_catalog = backup_dir / "catalog.bin"
-    if bk_catalog.exists():
-        shutil.copy2(bk_catalog, game / CATALOG_RELPATH)
-        restored.append("catalog.bin")
-    if restored:
-        state_file = game / PATCH_STATE_FILE
-        if state_file.exists():
-            state_file.unlink()
-        return True
-    return False
+    metadata_path = backup_dir / 'backup_state.json'
+    metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.exists() else {}
+    saved_build, current_build = metadata.get('buildid'), get_steam_buildid(game_path)
+    if saved_build and current_build and saved_build != current_build:
+        raise RuntimeError('다른 게임 빌드의 백업. Steam 무결성 검사로 복원 필요')
+    pairs = _backup_files(game, backup_dir, metadata)
+    aa = game / Path(BUNDLE_SUBDIR).parent
+    with workspace_lock(aa):
+        before = {target: target.read_bytes() for _, target in pairs}
+        try:
+            for saved, target in pairs:
+                atomic_write(target, saved.read_bytes())
+        except BaseException:
+            for target, content in before.items():
+                atomic_write(target, content)
+            raise
+        (game / PATCH_STATE_FILE).unlink(missing_ok=True)
+    return True
 
 
 # ━━━ 6. LELocalePatch CLI ━━━
@@ -299,15 +353,32 @@ def find_bundle_path(game_path):
     return None
 
 def run_lelocale_patch(lelocale_exe, bundle_path, action, json_source, progress_cb=None):
-    cmd = [lelocale_exe, bundle_path, action, json_source]
-    log.info(f"LELocalePatch 실행: {' '.join(cmd)}")
-    if progress_cb:
-        progress_cb("LELocalePatch 실행 중...", -1)
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-    log.info(f"LELocalePatch stdout: {result.stdout}")
-    if result.returncode != 0:
-        raise RuntimeError(f"LELocalePatch 실행 실패 (exit code: {result.returncode})\n{result.stderr or result.stdout}")
-    return result
+    if action == 'import':
+        return import_locale(lelocale_exe, bundle_path, json_source)
+    return run_checked(lelocale_exe, bundle_path, action, json_source)
+
+
+def extract_checked(zip_path, destination):
+    destination = Path(destination).resolve()
+    with zipfile.ZipFile(zip_path) as archive:
+        infos = archive.infolist()
+        if len(infos) > 1000 or sum(i.file_size for i in infos) > 512 * 1024 * 1024:
+            raise ValueError('패치 압축파일 크기/항목 수 제한 초과')
+        seen = set()
+        for info in infos:
+            name = info.filename
+            target = destination / name
+            if ('\\' in name or ':' in name or name.startswith('/') or
+                    '..' in Path(name).parts or any(part.endswith((' ', '.')) for part in Path(name).parts) or
+                    any(part.split('.')[0].upper() in {'CON','PRN','AUX','NUL',*[f'COM{i}' for i in range(1,10)],*[f'LPT{i}' for i in range(1,10)]} for part in Path(name).parts) or
+                    (info.external_attr >> 16) & 0o170000 == 0o120000):
+                raise ValueError(f'허용되지 않는 압축 경로: {name}')
+            target.resolve().relative_to(destination)
+            normalized = name.casefold()
+            if normalized in seen:
+                raise ValueError(f'중복 압축 경로: {name}')
+            seen.add(normalized)
+        archive.extractall(destination)
 
 
 # ━━━ 7. 델타 패칭 ━━━
@@ -355,7 +426,9 @@ class PatchOrchestrator:
             self._log(f"최신 릴리즈: {tag}")
 
             game_updated = self.check_game_updated()
-            if not self.state.is_outdated(tag) and not game_updated:
+            installed_bundle = find_bundle_path(self.game_path)
+            content_matches = (installed_bundle is not None and self.state.data.get("bundle_hash") == sha256_file(installed_bundle))
+            if not self.state.is_outdated(tag) and not game_updated and content_matches:
                 msg = f"이미 최신 패치 적용됨 ({tag})"
                 self._log(f"✅ {msg}")
                 self._status(msg)
@@ -370,12 +443,12 @@ class PatchOrchestrator:
             size_mb = bundle_asset["size"] / 1024 / 1024
             self._log(f"패치 번들: {bundle_asset['name']} ({size_mb:.1f}MB)")
 
-            checksums = {}
-            if "checksums" in assets:
-                try:
-                    checksums = download_and_parse_checksums(assets["checksums"]["url"])
-                except Exception:
-                    pass
+            if 'checksums' not in assets:
+                raise RuntimeError('SHA256SUMS 없는 릴리즈는 적용할 수 없음')
+            checksums = download_and_parse_checksums(assets['checksums']['url'])
+            expected_hash = checksums.get(bundle_asset['name'], '')
+            if not re.fullmatch(r'[0-9a-fA-F]{64}', expected_hash):
+                raise RuntimeError('패치 ZIP의 유효한 SHA256 체크섬 없음')
 
             bundle_path = find_bundle_path(self.game_path)
             if not bundle_path:
@@ -384,14 +457,8 @@ class PatchOrchestrator:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 use_delta = False
-                if HAS_DETOOLS and "delta_patch" in assets and self.state.patch_version:
-                    delta_asset = assets["delta_patch"]
-                    delta_path = os.path.join(tmpdir, delta_asset["name"])
-                    download_file(delta_asset["url"], delta_path, self._dl_progress)
-                    new_bundle = os.path.join(tmpdir, "patched_bundle")
-                    use_delta = apply_delta_patch(str(bundle_path), delta_path, new_bundle)
-                    if use_delta:
-                        shutil.copy2(new_bundle, str(bundle_path))
+                if 'delta_patch' in assets:
+                    self._log('델타의 기준 번들 검증 정보 없음 — 전체 ZIP 사용')
 
                 if not use_delta:
                     self._status(f"패치 번들 다운로드 중... ({size_mb:.1f}MB)")
@@ -407,8 +474,7 @@ class PatchOrchestrator:
                     self._status("압축 해제 중...")
                     extract_dir = os.path.join(tmpdir, "extracted")
                     os.makedirs(extract_dir)
-                    with zipfile.ZipFile(zip_path, "r") as zf:
-                        zf.extractall(extract_dir)
+                    extract_checked(zip_path, extract_dir)
 
                     lelocale_exe = self._find_file(extract_dir, "lelocalepatch.exe")
                     json_source = self._find_json_source(extract_dir)
@@ -417,6 +483,8 @@ class PatchOrchestrator:
                     self._log(f"JSON 소스: {json_source}")
                     self._log(f"JSON 파일들: {self._list_json_files(json_source)}")
 
+                    if not lelocale_exe or not self._list_json_files(json_source):
+                        raise RuntimeError('LELocalePatch.exe 또는 번역 JSON이 없는 패키지')
                     self._status("기존 파일 백업 중...")
                     create_backup(self.game_path)
 
@@ -425,9 +493,7 @@ class PatchOrchestrator:
                         run_lelocale_patch(lelocale_exe, str(bundle_path), "import", json_source)
                         files = self._list_json_files(json_source)
                         self._log(f"LELocalePatch: {len(files)}개 JSON 적용")
-                    else:
-                        self._log("⚠️ LELocalePatch.exe 미포함 — 직접 복사 모드")
-                        files = self._apply_direct_copy(extract_dir)
+
 
                 current_buildid = get_steam_buildid(self.game_path)
                 bh = sha256_file(str(bundle_path))
@@ -464,7 +530,7 @@ class PatchOrchestrator:
                 best_dir = root
         if best_count == 0:
             for root, dirs, files in os.walk(extract_dir):
-                jsons = [f for f in files if f.endswith(".json") and f != "manifest.json"]
+                jsons = [f for f in files if f.endswith("_ko.json")]
                 if len(jsons) > best_count:
                     best_count = len(jsons)
                     best_dir = root
@@ -472,7 +538,7 @@ class PatchOrchestrator:
 
     def _list_json_files(self, source):
         if os.path.isdir(source):
-            return [f for f in os.listdir(source) if f.endswith(".json") and f != "manifest.json"]
+            return [f for f in os.listdir(source) if f.endswith("_ko.json")]
         return []
 
     def _apply_direct_copy(self, extract_dir):
@@ -546,9 +612,8 @@ def run_gui():
 
             fo = tk.Frame(self.root, bg=self.BG)
             fo.pack(fill="x", padx=24, pady=(10, 5))
-            self.do_backup = tk.BooleanVar(value=True)
             self.do_force = tk.BooleanVar(value=False)
-            for text, var in [("적용 전 기존 파일 백업", self.do_backup), ("강제 재적용 (같은 버전이어도)", self.do_force)]:
+            for text, var in [("강제 재적용 (같은 버전이어도)", self.do_force)]:
                 tk.Checkbutton(fo, text=text, variable=var, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w")
 
             fp2 = tk.Frame(self.root, bg=self.BG)
@@ -650,11 +715,11 @@ def run_gui():
             self.btn_apply.configure(state="disabled")
             self.btn_restore.configure(state="disabled")
             self.progress["value"] = 0
-            threading.Thread(target=self._run_patch, args=(gp,), daemon=True).start()
+            threading.Thread(target=self._run_patch, args=(gp, self.do_force.get()), daemon=True).start()
 
-        def _run_patch(self, gp):
+        def _run_patch(self, gp, force=False):
             orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t))
-            if self.do_force.get():
+            if force:
                 orch.state.data.pop("patch_version", None)
             res = orch.run()
             def done():
@@ -675,7 +740,12 @@ def run_gui():
                 return
             if not messagebox.askyesno("확인", "백업에서 복원하시겠습니까?"):
                 return
-            if restore_backup(gp):
+            try:
+                restored = restore_backup(gp)
+            except Exception as exc:
+                messagebox.showerror("복원 실패", str(exc))
+                return
+            if restored:
                 self._log("✅ 복원 완료")
                 self._refresh_info(gp)
                 messagebox.showinfo("완료", "복원 완료!")
@@ -692,6 +762,7 @@ def run_gui():
 def run_cli():
     import argparse
     parser = argparse.ArgumentParser(description="Last Epoch 한국어 번역패치")
+    parser.add_argument("--cli", action="store_true", help="CLI 모드")
     parser.add_argument("--path", help="게임 폴더 경로")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--restore", action="store_true")
