@@ -366,7 +366,9 @@ def extract_checked(zip_path, destination):
             raise ValueError('패치 압축파일 크기/항목 수 제한 초과')
         seen = set()
         for info in infos:
-            name = info.filename
+            name = info.orig_filename
+            if name != info.filename or chr(0) in name:
+                raise ValueError(f'정규화 전후가 다른 압축 경로: {name!r}')
             target = destination / name
             if ('\\' in name or ':' in name or name.startswith('/') or
                     '..' in Path(name).parts or any(part.endswith((' ', '.')) for part in Path(name).parts) or

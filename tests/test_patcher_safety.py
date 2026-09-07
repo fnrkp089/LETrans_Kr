@@ -88,7 +88,8 @@ class BackupTests(unittest.TestCase):
 
 class ArchiveTests(unittest.TestCase):
     def test_windows_paths_symlink_and_case_duplicates_rejected(self):
-        cases = [['../bad'], ['CON.json'], ['dir/file.'], ['a.json', 'A.json']]
+        raw = zipfile.ZipInfo('raw'); raw.filename = 'folder\\bad.json'
+        cases = [[raw], ['../bad'], ['CON.json'], ['dir/file.'], ['a.json', 'A.json']]
         link = zipfile.ZipInfo('link.json'); link.create_system = 3; link.external_attr = 0o120777 << 16
         cases.append([link])
         for entries in cases:
