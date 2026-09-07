@@ -1,0 +1,6 @@
+
+# Local Python checks/builds
+__pycache__/
+*.py[cod]
+patcher/build/
+patcher/dist/
