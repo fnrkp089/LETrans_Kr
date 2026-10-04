@@ -367,6 +367,46 @@ def _backup_files(game, backup_dir, metadata):
     return pairs
 
 
+class _StagingDir:
+    """parent 아래에 만들었다가 끝나면 지우는 작업 폴더.
+
+    tempfile.mkdtemp를 쓰지 않는 이유: Windows에서 만든 계정만 쓸 수 있는 권한이 걸리고, 그 안에서 만든 폴더를
+    밖으로 옮겨도 그 권한이 따라감. 그러면 패처를 관리자 권한으로 한 번 실행한 뒤 일반 권한으로 실행할 때
+    백업·패처 폴더를 열지 못함(Permission denied).
+    """
+
+    def __init__(self, parent, prefix):
+        self.path = Path(parent) / f"{prefix}{os.getpid()}-{datetime.now().strftime('%H%M%S%f')}"
+
+    def __enter__(self):
+        self.path.mkdir()
+        return self.path
+
+    def __exit__(self, *exc):
+        shutil.rmtree(self.path, ignore_errors=True)
+
+
+def inherit_permissions(folder):
+    """폴더와 그 안의 권한을 상위 폴더에서 물려받게 되돌림. 이전 버전이 만든 백업 폴더용, 실패해도 그대로 진행."""
+    if os.name != "nt" or not Path(folder).is_dir():
+        return
+    try:
+        subprocess.run(["icacls", str(folder), "/reset", "/T", "/C", "/Q"], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def explain_error(exc):
+    """오류 문구. 백업 폴더 권한 문제에는 해결 방법을 덧붙임."""
+    message = str(exc)
+    if isinstance(exc, PermissionError) and BACKUP_DIR_NAME in message:
+        message += ("\n\n백업 폴더를 열 권한이 없습니다. 예전에 패처를 '관리자 권한으로 실행'한 적이 있으면 생기는 문제입니다.\n"
+                    "바탕 화면의 패처 바로가기를 우클릭 → '관리자 권한으로 실행'으로 한 번 실행해 패치 적용을 누르면 "
+                    "권한이 고쳐지고, 다음부터는 평소처럼 실행해도 됩니다.")
+    return message
+
+
 def create_backup(game_path):
     game = Path(game_path).resolve()
     backup_dir = game / BACKUP_DIR_NAME
@@ -381,6 +421,7 @@ def create_backup(game_path):
         raise FileNotFoundError('게임 catalog 없음')
     with workspace_lock(bundle.parent.parent):
         if backup_dir.exists():
+            inherit_permissions(backup_dir)
             metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.exists() else {}
             same_build = metadata.get('buildid') == buildid if metadata else not PatchState(game_path).game_was_updated(buildid)
             if same_build:
@@ -390,8 +431,8 @@ def create_backup(game_path):
                         'files': {saved.name: {'path': str(target.relative_to(game)), 'sha256': sha256_file(saved)}
                                   for saved, target in pairs}})
                 return str(backup_dir)
-        with tempfile.TemporaryDirectory(prefix='.kr-backup-', dir=game) as tmp:
-            stage = Path(tmp) / 'backup'; stage.mkdir()
+        with _StagingDir(game, '.kr-backup-') as tmp:
+            stage = tmp / 'backup'; stage.mkdir()
             files = {}
             for path in [bundle, catalog]:
                 shutil.copy2(path, stage / path.name)
@@ -422,6 +463,7 @@ def restore_backup(game_path):
     backup_dir = game / BACKUP_DIR_NAME
     if not backup_dir.exists():
         return False
+    inherit_permissions(backup_dir)
     metadata_path = backup_dir / 'backup_state.json'
     metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.exists() else {}
     saved_build, current_build = metadata.get('buildid'), get_steam_buildid(game_path)
@@ -881,7 +923,8 @@ def apply_patcher_update(update, progress_cb=None):
     if not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
         raise RuntimeError("패처 업데이트의 체크섬 정보가 없습니다.")
     try:
-        stage = Path(tempfile.mkdtemp(prefix=".update-", dir=app.parent))
+        stage = _StagingDir(app.parent, ".update-").path
+        stage.mkdir()
     except OSError as exc:
         raise RuntimeError(f"패처 폴더에 쓸 수 없습니다: {exc}")
     old = app.with_name("app.old")
@@ -1086,7 +1129,7 @@ class PatchOrchestrator:
                 self._status(f"✅ {msg}")
 
         except Exception as e:
-            result["message"] = str(e)
+            result["message"] = explain_error(e)
             self._log(f"❌ 오류: {e}")
             self._status("❌ 오류 발생")
             log.exception("Patch failed")
@@ -1506,7 +1549,7 @@ def run_gui():
             try:
                 restored = restore_all(gp)
             except Exception as exc:
-                messagebox.showerror("복원 실패", str(exc))
+                messagebox.showerror("복원 실패", explain_error(exc))
                 return
             if restored:
                 self._log("✅ 복원 완료")

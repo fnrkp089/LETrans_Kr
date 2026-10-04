@@ -77,6 +77,17 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.bundle.read_bytes(), b'patched bundle')
         self.assertEqual(self.catalog.read_bytes(), b'patched catalog')
 
+    def test_backup_permission_error_tells_how_to_fix(self):
+        denied = PermissionError(13, 'Permission denied', str(self.game / patcher.BACKUP_DIR_NAME / 'backup_state.json'))
+        self.assertIn('관리자 권한으로 실행', patcher.explain_error(denied))
+        self.assertNotIn('관리자 권한', patcher.explain_error(PermissionError(13, 'Permission denied', str(self.bundle))))
+        self.assertEqual(patcher.explain_error(RuntimeError('다른 오류')), '다른 오류')
+
+    def test_staging_folder_is_removed_and_backup_left_in_game_folder(self):
+        patcher.create_backup(self.game)
+        self.assertEqual(sorted(p.name for p in self.game.iterdir() if p.name.startswith('.')), [])
+        self.assertTrue((self.game / patcher.BACKUP_DIR_NAME / 'backup_state.json').is_file())
+
     def test_alternative_catalog_and_bundle_names(self):
         self.bundle = self.bundle.rename(self.bundle.with_name('custom-korean.bundle'))
         self.catalog = self.catalog.rename(self.catalog.with_name('catalog.json'))
