@@ -39,18 +39,42 @@ jobs:
       - name: Smoke test
         run: dist\LastEpoch_KR_Patcher\runtime\python.exe -B -c "import patcher, tkinter, ssl; print(patcher.PATCHER_VERSION)"
 
-      # 이 zip들이 이 저장소의 이 커밋에서 빌드됐다는 증명 (gh attestation verify로 확인)
+      # 패키지 폴더를 그대로 설치하는 설치 프로그램 (Inno Setup)
+      - name: Build installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          $version = "${{ steps.build.outputs.name }}" -replace '^.*-v', ''
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$PWD\dist\LastEpoch_KR_Patcher" "/O$PWD\dist" patcher\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $setup = Get-Item dist\LastEpoch_KR_Patcher-v*-setup.exe
+          python -c "import hashlib, pathlib, sys; p = pathlib.Path(sys.argv[1]); open('dist/SHA256SUMS', 'a', newline='\n').write(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n')" $setup.FullName
+          Get-Content dist\SHA256SUMS
+
+      - name: Install test
+        run: |
+          $setup = Get-Item dist\LastEpoch_KR_Patcher-v*-setup.exe
+          $target = "$env:RUNNER_TEMP\install-test"
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$target" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+          & "$target\runtime\python.exe" -B -c "import patcher; assert patcher.package_dir(), 'package_dir'; print(patcher.PATCHER_VERSION, patcher.package_dir())"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # 이 파일들이 이 저장소의 이 커밋에서 빌드됐다는 증명 (gh attestation verify로 확인)
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/LastEpoch_KR_Patcher-*.zip
+          subject-path: |
+            dist/LastEpoch_KR_Patcher-*.zip
+            dist/LastEpoch_KR_Patcher-*-setup.exe
 
-      # 전체 패키지, 자체 업데이트용 app zip, SHA256SUMS
+      # 설치 프로그램, 전체 패키지(압축본), 자체 업데이트용 app zip, SHA256SUMS
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.build.outputs.name }}
           path: |
+            dist/LastEpoch_KR_Patcher-*-setup.exe
             dist/LastEpoch_KR_Patcher-*.zip
             dist/SHA256SUMS
           compression-level: 0

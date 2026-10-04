@@ -4,11 +4,14 @@
 
 ## 사용
 
-1. [릴리즈](https://github.com/fnrkp089/LETrans_Kr/releases)에서 `LastEpoch_KR_Patcher-v<버전>.zip`을 받아 압축을 풂.
-2. 푼 폴더의 `LastEpoch_KR_Patcher.cmd` 실행.
+1. [릴리즈](https://github.com/fnrkp089/LETrans_Kr/releases)에서 `LastEpoch_KR_Patcher-v<버전>-setup.exe`를 받아 설치. 사용자 폴더에 설치하므로 관리자 권한을 묻지 않음.
+2. 바탕 화면이나 시작 메뉴의 `Last Epoch 한국어 패치` 실행.
 3. 게임 경로를 확인한 뒤 패치 적용.
 
 게임을 종료한 상태에서 실행해야 함. 한국어 번들이 없다면 게임에서 한국어를 한 번 선택해야 함.
+새 패처가 나오면 패처가 알려주고 스스로 업데이트하므로 다시 받을 필요 없음.
+
+설치 없이 쓰려면 `LastEpoch_KR_Patcher-v<버전>.zip`을 받아 압축을 풀고 `LastEpoch_KR_Patcher.cmd` 실행.
 
 소스 실행은 Python 3.10 이상에서:
 
@@ -23,7 +26,7 @@ py patcher/patcher.py --restore
 ## 패처에 exe가 없는 이유
 
 0.7.4까지는 PyInstaller로 만든 단일 exe를 배포했는데, 서명 없는 PyInstaller exe는 백신의 머신러닝 추정에 자주 걸림(`Trojan:Win32/Wacatac.H!ml` 등 오탐).
-0.8.0부터는 직접 만든 실행 파일을 넣지 않음.
+0.8.0부터 패처 본체에는 직접 만든 실행 파일을 넣지 않음. 설치 프로그램은 아래 구성을 사용자 폴더에 풀고 바로가기를 만드는 [Inno Setup](https://jrsoftware.org/isinfo.php) 설치본임(`patcher/installer.iss`).
 
 | 구성 | 내용 |
 |---|---|
@@ -57,7 +60,7 @@ LELocalePatch는 실제 번들에 존재하는 키만 수정하며 게임 내 �
 ## 릴리즈 구성
 
 - 번역 릴리즈 `v<버전>`: `kr-patch-<버전>.zip`(LELocalePatch.exe와 `*_ko.json` 테이블), `LEFontPatch.exe`, `SHA256SUMS`, `release_manifest.json`. 패처는 최신 번역 릴리즈를 받아 적용함.
-- 패처 릴리즈 `patcher-v<버전>`: `LastEpoch_KR_Patcher-v<버전>.zip`(전체 패키지), `LastEpoch_KR_Patcher-app-v<버전>.zip`(자체 업데이트용, `app\`만), `SHA256SUMS`. 패처 코드가 바뀔 때만 새로 올림. 번역 릴리즈가 계속 Latest여야 하므로 Latest로 지정하지 않음.
+- 패처 릴리즈 `patcher-v<버전>`: `LastEpoch_KR_Patcher-v<버전>-setup.exe`(설치 프로그램), `LastEpoch_KR_Patcher-v<버전>.zip`(설치 없이 쓰는 압축본), `LastEpoch_KR_Patcher-app-v<버전>.zip`(자체 업데이트용, `app\`만), `SHA256SUMS`. 패처 코드가 바뀔 때만 새로 올림. 번역 릴리즈가 계속 Latest여야 하므로 Latest로 지정하지 않음.
 
 ## 패처 자체 업데이트
 
@@ -82,7 +85,7 @@ py patcher/build_package.py --out dist
 `build_package.py`는 python.org에서 Python 배포본을 받아 SHA256을 확인하고, 쓰지 않는 구성요소를 뺀 뒤 패처 소스와 함께 묶음.
 묶은 뒤 exe/dll/pyd의 서명이 전부 유효한지 확인하며 하나라도 아니면 실패함.
 
-`Build Patcher Package` 워크플로는 수동 실행 시 테스트 → 빌드 → 출처 증명 → 아티팩트 업로드까지 함.
+`Build Patcher Package` 워크플로는 수동 실행 시 테스트 → 패키지 빌드 → 설치 프로그램 빌드·설치 확인 → 출처 증명 → 아티팩트 업로드까지 함.
 `Test patcher` 워크플로는 테스트만 실행함.
 
 ```powershell
