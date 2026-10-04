@@ -1203,12 +1203,17 @@ def run_gui():
             notes.pack(side="right", fill="both", expand=True, padx=(0, 24), pady=(20, 20))
             self.lbl_notes = ttk.Label(notes, text="업데이트 내용", style="Sub.TLabel")
             self.lbl_notes.pack(anchor="w")
+            # 위: 릴리즈 목록 / 아래: 고른 릴리즈의 내용
+            self._notes = []
+            self.notes_list = tk.Listbox(notes, height=5, bg=self.ENTRY_BG, fg=self.FG, font=("맑은 고딕", 9), relief="flat", bd=4, highlightthickness=0, activestyle="none", exportselection=False, selectbackground=self.ACCENT, selectforeground="#ffffff")
+            self.notes_list.pack(fill="x", pady=(3, 6))
+            self.notes_list.bind("<<ListboxSelect>>", lambda _: self._show_release())
             self.notes_text = tk.Text(notes, width=40, bg=self.BG2, fg=self.FG, font=("맑은 고딕", 9), relief="flat", bd=8, wrap="word", state="disabled", cursor="arrow", spacing1=2, spacing3=2)
             scroll = ttk.Scrollbar(notes, orient="vertical", command=self.notes_text.yview)
             self.notes_text.configure(yscrollcommand=scroll.set)
             scroll.pack(side="right", fill="y", pady=(3, 0))
             self.notes_text.pack(fill="both", expand=True, pady=(3, 0))
-            self.notes_text.tag_configure("version", foreground=self.ACCENT, font=("맑은 고딕", 11, "bold"), spacing1=10)
+            self.notes_text.tag_configure("version", foreground=self.ACCENT, font=("맑은 고딕", 11, "bold"))
             self.notes_text.tag_configure("date", foreground="#888", font=("맑은 고딕", 8))
             self.notes_text.tag_configure("bold", font=("맑은 고딕", 9, "bold"), foreground="#ffffff")
             self.notes_text.tag_configure("item", lmargin1=6, lmargin2=18)
@@ -1277,39 +1282,51 @@ def run_gui():
             self.btn_restore.pack(side="right", padx=(10, 0), ipady=8)
 
         def _render_notes(self):
-            """오른쪽 칸에 v1.0.0부터의 릴리즈 노트(주요 작업)를 최신순으로 표시. 적용된 버전 이후 것은 새로 적용될 내용으로 구분."""
+            """오른쪽 칸에 v1.0.0부터의 릴리즈 목록을 최신순으로 채우고, 고른 릴리즈의 내용(주요 작업)을 아래에 표시."""
             gp = self.game_path.get().strip()
             current = PatchState(gp).patch_version if gp and Path(gp).is_dir() else None
+            selected = self._notes[self.notes_list.curselection()[0]]["tag"] if self._notes and self.notes_list.curselection() else None
+            self._notes = release_history(self._releases, current) if self._releases else []
+            self.notes_list.delete(0, "end")
+            if not self._notes:
+                self.lbl_notes.configure(text="업데이트 내용")
+                message = "릴리즈 노트를 불러오는 중..." if self._releases is None else "릴리즈 노트를 불러오지 못했습니다."
+                self._show_release(message)
+                return
+            pending = self._notes[0]["new"]
+            self.lbl_notes.configure(text=f"새로 적용될 내용 ({current} → {self._notes[0]['tag']})" if pending else "업데이트 내용")
+            for i, entry in enumerate(self._notes):
+                self.notes_list.insert("end", ("● " if entry["new"] else "   ") + entry["title"])
+                if entry["new"]:
+                    self.notes_list.itemconfigure(i, foreground=self.WARN)
+            # 고른 것이 있으면 유지, 없으면 최신 릴리즈
+            index = next((i for i, entry in enumerate(self._notes) if entry["tag"] == selected), 0)
+            self.notes_list.selection_set(index)
+            self.notes_list.see(index)
+            self._show_release()
+
+        def _show_release(self, message=None):
+            """목록에서 고른 릴리즈의 내용을 표시. message가 있으면 그 안내문만."""
             box = self.notes_text
             box.configure(state="normal")
             box.delete("1.0", "end")
-            if not self._releases:
-                self.lbl_notes.configure(text="업데이트 내용")
-                box.insert("end", "릴리즈 노트를 불러오는 중..." if self._releases is None else "릴리즈 노트를 불러오지 못했습니다.", "muted")
+            picked = self.notes_list.curselection()
+            if message or not picked:
+                box.insert("end", message or "", "muted")
                 box.configure(state="disabled")
                 return
-            entries = release_history(self._releases, current)
-            if not entries:
-                self.lbl_notes.configure(text="업데이트 내용")
-                box.insert("end", "릴리즈 노트가 없습니다.", "muted")
-                box.configure(state="disabled")
-                return
-            pending = entries[0]["new"]
-            self.lbl_notes.configure(text=f"새로 적용될 내용 ({current} → {entries[0]['tag']})" if pending else f"업데이트 내용 ({entries[-1]['tag']}부터)")
-            for i, entry in enumerate(entries):
-                if pending and not entry["new"] and entries[i - 1]["new"]:
-                    box.insert("end", "\n── 이미 적용된 릴리즈 ──\n", "muted")
-                box.insert("end", entry["title"] + "\n", "version")
-                box.insert("end", entry["date"] + ("  ·  새로 적용" if entry["new"] else "") + "\n", "date")
-                for line in entry["lines"]:
-                    if not line.strip():
-                        continue
-                    lead, spans = markdown_spans(line)
-                    tag = ("subitem" if line.startswith(" ") else "item") if lead else None
-                    box.insert("end", lead, tag)
-                    for text, bold in spans:
-                        box.insert("end", text, tuple(t for t in (tag, "bold" if bold else None) if t))
-                    box.insert("end", "\n", tag)
+            entry = self._notes[picked[0]]
+            box.insert("end", entry["title"] + "\n", "version")
+            box.insert("end", entry["date"] + ("  ·  아직 적용 안 됨 (패치 적용을 누르면 적용)" if entry["new"] else "") + "\n", "date")
+            for line in entry["lines"]:
+                if not line.strip():
+                    continue
+                lead, spans = markdown_spans(line)
+                tag = ("subitem" if line.startswith(" ") else "item") if lead else None
+                box.insert("end", lead, tag)
+                for text, bold in spans:
+                    box.insert("end", text, tuple(t for t in (tag, "bold" if bold else None) if t))
+                box.insert("end", "\n", tag)
             box.configure(state="disabled")
 
         def _log(self, msg):
