@@ -12,7 +12,8 @@
 #endif
 
 #define AppName "Last Epoch 한국어 패치"
-#define Launch "-B ""{app}\app\patcher.py"""
+; [Icons]/[Run]의 Parameters 값 안에 들어가므로 따옴표를 두 번 씀
+#define Launch '-B ""{app}\app\patcher.py""'
 
 [Setup]
 AppId={{6C0E1B5E-6E0C-4B7F-9D4B-2F1E7A53C0A4}
