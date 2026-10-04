@@ -22,7 +22,7 @@ import urllib.error
 from pathlib import Path
 from datetime import datetime
 
-# SSL 인증서 설정 (PyInstaller exe에서 인증서 못 찾는 문제 해결)
+# SSL 인증서 설정 (certifi가 없으면 Windows 인증서 저장소 사용)
 try:
     import certifi
     SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
@@ -47,7 +47,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.6.1"
+PATCHER_VERSION = "0.8.0"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -59,6 +59,22 @@ CATALOG_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "catalog.
 
 PATCH_STATE_FILE = "kr_patch_state.json"
 BACKUP_DIR_NAME = "kr_patch_backup"
+
+# 폰트 패치 (LEFontPatch): 한국어 폰트 에셋은 번역 번들이 아니라 resources.assets와,
+# UI 대부분이 쓰는 사본이 든 PermaLoad.bundle 두 곳에 있음. 한쪽만 바꾸면 글자마다 폰트가 섞임
+RESOURCES_RELPATH = Path("Last Epoch_Data") / "resources.assets"
+FONT_BUNDLE_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "LEAssetBundles" / "PermaLoad.bundle"
+FONT_BACKUP_DIR_NAME = "kr_font_backup"
+FONT_TOOL_NAME = "LEFontPatch.exe"
+KR_FONT_ASSETS = ["NotoSerifKR-Regular SDF (Body)", "HahmletKR-Medium SDF (Title)"]
+# 게임은 영문·숫자·기호를 라틴 폰트에서 먼저 찾으므로, 한국어 폰트로 넘기려면 다른 폰트에서 빼야 함.
+# "*": 선택한 폰트 파일에 있는 글자 전부
+FONT_ALL_CHARACTERS = "*"
+FONT_MODES = {
+    "none": "게임 기본 폰트",
+    "bold": "진한 고딕 (Pretendard Bold)",
+    "custom": "직접 선택 (TTF/OTF 파일)",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("patcher")
@@ -165,7 +181,50 @@ def find_release_assets(release):
             assets["delta_patch"] = info
         elif name.startswith("kr-patch-") and name.endswith(".zip"):
             assets["patch_bundle"] = info
+        elif name == FONT_TOOL_NAME.lower():
+            assets["font_tool"] = info
     return assets
+
+
+def release_highlights(body):
+    """릴리즈 노트에서 첫 '## ' 섹션(주요 작업)의 줄만 추림. 섹션이 없으면 본문 전체.
+
+    노트마다 Defender 안내·사용법·복원이 똑같이 붙어 있어 전부 보여주면 바뀐 내용이 묻힘.
+    """
+    lines = (body or "").replace("\r\n", "\n").split("\n")
+    starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
+    if starts:
+        end = starts[1] if len(starts) > 1 else len(lines)
+        lines = lines[starts[0] + 1:end]
+    else:
+        lines = [line for line in lines if not line.startswith("# ")]
+    lines = [line.rstrip() for line in lines if line.strip() != "---"]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+def changelog_since(releases, current_version, limit=5):
+    """적용된 버전보다 새 릴리즈들(최신순). 이미 최신이거나 미적용이면 최신 릴리즈 하나."""
+    # 번역 릴리즈(vX.Y.Z)만. 패처 패키지 릴리즈(patcher-vX.Y.Z)는 제외
+    published = [r for r in releases if re.match(r"v\d", r.get("tag_name") or "")
+                 and not r.get("draft") and not r.get("prerelease")]
+    published.sort(key=lambda r: parse_version(r["tag_name"]), reverse=True)
+    newer = [r for r in published if current_version and parse_version(r["tag_name"]) > parse_version(current_version)]
+    return [{"tag": r["tag_name"], "title": r.get("name") or r["tag_name"], "date": (r.get("published_at") or "")[:10],
+             "lines": release_highlights(r.get("body"))} for r in (newer or published[:1])[:limit]]
+
+
+def markdown_spans(line):
+    """릴리즈 노트 한 줄 → (머리 기호, [(글, 굵게 여부)]). 링크는 글만, 백틱은 뗌."""
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line.strip()).replace("`", "")
+    lead = ""
+    if text.startswith(("- ", "* ")):
+        lead, text = "• ", text[2:]
+    spans = [(part, i % 2 == 1) for i, part in enumerate(text.split("**")) if part]
+    return lead, spans
 
 
 # ━━━ 3. 다운로드 + 검증 ━━━
@@ -352,9 +411,26 @@ def find_bundle_path(game_path):
                 return f
     return None
 
+def work_root():
+    """임시 작업 폴더를 만들 위치. 쓸 수 없으면 None (시스템 TEMP).
+
+    시스템 TEMP가 '문서' 아래로 바뀌어 있는 PC(예: ESTsoft CreatorTemp)에서는 랜섬웨어 차단 기능이
+    LELocalePatch의 파일 생성을 막아 "Could not find file ...catalog.bin"으로 실패하므로 TEMP에 의존하지 않음.
+    """
+    base = os.environ.get("LOCALAPPDATA")
+    if not base:
+        return None
+    root = Path(base) / "LETransKr" / "tmp"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return str(root)
+
+
 def run_lelocale_patch(lelocale_exe, bundle_path, action, json_source, progress_cb=None):
     if action == 'import':
-        return import_locale(lelocale_exe, bundle_path, json_source)
+        return import_locale(lelocale_exe, bundle_path, json_source, workdir=work_root())
     return run_checked(lelocale_exe, bundle_path, action, json_source)
 
 
@@ -383,6 +459,314 @@ def extract_checked(zip_path, destination):
         archive.extractall(destination)
 
 
+# ━━━ 6b. 폰트 패치 (LEFontPatch CLI) ━━━
+
+def normalize_font(font):
+    """{'mode': none|bold|custom, 'ttf': 경로, 'all_text': 영문·숫자·기호 포함 여부} 검증.
+
+    custom은 파일 해시까지 포함해 변경 감지에 사용. all_text 기본값은 True.
+    """
+    mode = (font or {}).get("mode", "none")
+    if mode not in FONT_MODES:
+        raise ValueError(f"알 수 없는 폰트 설정: {mode}")
+    if mode == "none":
+        return {"mode": mode}
+    all_text = bool(font.get("all_text", True))
+    if mode != "custom":
+        return {"mode": mode, "all_text": all_text}
+    ttf = Path(font.get("ttf") or "")
+    if not ttf.is_file() or ttf.suffix.lower() not in (".ttf", ".otf"):
+        raise ValueError("폰트 파일(.ttf/.otf)을 선택해주세요.")
+    return {"mode": mode, "all_text": all_text, "ttf": str(ttf.resolve()), "ttf_sha256": sha256_file(ttf)}
+
+
+def _font_files(game):
+    """폰트 에셋이 든 게임 파일들 (게임 폴더 기준 상대 경로). 번들은 게임 버전에 따라 없을 수 있음."""
+    files = [RESOURCES_RELPATH]
+    if (Path(game) / FONT_BUNDLE_RELPATH).is_file():
+        files.append(FONT_BUNDLE_RELPATH)
+    return files
+
+
+def _patched_hashes(state):
+    saved = state.data.get("font") or {}
+    if "patched_sha256" in saved:  # v0.7.0: resources.assets만 패치하던 형식
+        return {RESOURCES_RELPATH.as_posix(): saved["patched_sha256"]}
+    return saved.get("patched") or {}
+
+
+def font_is_applied(game_path, state, font):
+    """원하는 폰트가 이미 적용돼 있고 게임 업데이트로 되돌려지지 않았는지."""
+    saved = state.data.get("font") or {}
+    wanted = normalize_font(font)
+    game = Path(game_path)
+    patched = _patched_hashes(state)
+    ours = {rel.as_posix(): (game / rel).is_file() and sha256_file(game / rel) == patched.get(rel.as_posix())
+            for rel in _font_files(game)}
+    if wanted["mode"] == "none":
+        # 우리가 만든 파일이 하나도 없으면 원본으로 본다 (Steam이 교체했거나 한 번도 적용 안 함)
+        return not any(ours.values())
+    return {k: saved.get(k) for k in wanted} == wanted and all(ours.values())
+
+
+def _copy_replace(source, target):
+    """큰 파일을 같은 폴더의 임시 파일로 복사한 뒤 교체. 게임 실행 중이면 교체 단계에서 실패."""
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    os.close(fd)
+    try:
+        shutil.copyfile(source, name)
+        os.replace(name, target)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def _font_originals(game, state):
+    """폰트 파일마다 원본 백업을 확보해 {상대 경로: (백업 경로, 원본 해시)} 반환.
+
+    현재 파일이 우리가 패치한 결과이거나 같은 게임 빌드의 백업이 있으면 그 백업이 원본.
+    그 외(첫 적용, 게임 업데이트로 파일 교체)에는 현재 파일을 원본으로 새로 백업.
+    """
+    backup_dir = game / FONT_BACKUP_DIR_NAME
+    metadata_path = backup_dir / "backup_state.json"
+    buildid = get_steam_buildid(game)
+    metadata = {}
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except ValueError:
+            metadata = {}
+    recorded = dict(metadata.get("files") or {})
+    if "sha256" in metadata:  # v0.7.0 형식
+        recorded[RESOURCES_RELPATH.as_posix()] = metadata["sha256"]
+    patched = _patched_hashes(state)
+    originals, changed = {}, False
+    for rel in _font_files(game):
+        key, target, saved = rel.as_posix(), game / rel, backup_dir / rel.name
+        current = sha256_file(target)
+        ours = current == patched.get(key)
+        if key in recorded and saved.is_file() and (ours or metadata.get("buildid") == buildid or recorded[key] == current):
+            if sha256_file(saved) != recorded[key]:
+                raise RuntimeError(f"폰트 원본 백업 손상({rel.name}). Steam 무결성 검사 후 다시 시도해주세요.")
+        elif ours:
+            raise RuntimeError(f"폰트 원본 백업 없음({rel.name}). Steam 무결성 검사 후 다시 시도해주세요.")
+        else:
+            _copy_replace(target, saved)
+            if sha256_file(saved) != current:
+                raise RuntimeError("폰트 원본 백업 중 게임 파일이 변경됨. 다시 실행 필요")
+            recorded[key], changed = current, True
+        originals[rel] = (saved, recorded[key])
+    if changed or "files" not in metadata:
+        write_json(metadata_path, {"buildid": buildid, "files": recorded})
+    return originals
+
+
+def _write_font_log(result):
+    """실패한 LEFontPatch의 전체 출력을 남겨 제보받을 때 원인을 볼 수 있게 함. 저장 못 하면 None."""
+    root = work_root()
+    if not root:
+        return None
+    path = Path(root).parent / "font_tool.log"
+    try:
+        path.write_text(f"{datetime.now().isoformat()} 패처 {PATCHER_VERSION} 종료 코드 {result.returncode}\n"
+                        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}\n", encoding="utf-8")
+    except OSError:
+        return None
+    return path
+
+
+def run_font_tool(tool_exe, game, package, bundles=0, timeout=1800):
+    result = subprocess.run([str(tool_exe), str(game), str(package)], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    lines = [line.strip() for line in result.stdout.splitlines()]
+    if result.returncode or "Error" in lines or "Done!" not in lines:
+        log_path = _write_font_log(result)
+        if result.returncode == 2:
+            reason = "게임에서 한국어 폰트를 찾지 못했습니다. 게임을 최신 버전으로 업데이트했는지 확인해주세요."
+        elif result.stderr.strip():
+            reason = result.stderr.strip().splitlines()[0]
+        else:
+            # 예외 메시지 없이 끝남: 도구가 중간에 강제 종료된 경우(백신 차단, 메모리 부족 등)
+            last = next((line for line in reversed(lines) if line and not line.startswith("Enter to exit")), "출력 없음")
+            reason = f"도구가 중간에 종료됨 (종료 코드 {result.returncode}, 마지막 단계: {last}). 백신이 차단했는지 확인해주세요."
+        raise RuntimeError(f"LEFontPatch 실패: {reason}" + (f"\n로그: {log_path}" if log_path else ""))
+    replaced = [line for line in lines if line.startswith("Made dynamic:")]
+    in_bundles = [line for line in lines if line.startswith("Made dynamic in bundle:")]
+    if len(replaced) != len(KR_FONT_ASSETS) or len(in_bundles) != len(KR_FONT_ASSETS) * bundles:
+        raise RuntimeError(f"한국어 폰트 일부만 교체됨 ({len(replaced)}+{len(in_bundles)}개). 게임 폰트 구성이 바뀐 것 같습니다.")
+    return replaced + in_bundles
+
+
+def apply_font(game_path, state, font, tool_exe=None):
+    """한국어 폰트를 교체하거나(mode bold/custom) 원본으로 되돌림(mode none). 적용된 설정 반환."""
+    game = Path(game_path).resolve()
+    wanted = normalize_font(font)
+    if not (game / RESOURCES_RELPATH).is_file():
+        raise FileNotFoundError(f"게임 파일 없음: {RESOURCES_RELPATH}")
+    if wanted["mode"] != "none" and not (tool_exe and Path(tool_exe).is_file()):
+        raise FileNotFoundError(f"{FONT_TOOL_NAME} 없음")
+    files = _font_files(game)
+    try:
+        for rel in files:
+            with open(game / rel, "r+b"):
+                pass
+    except PermissionError:
+        raise RuntimeError("게임이 실행 중입니다. 게임을 종료한 뒤 다시 시도해주세요.") from None
+
+    def restore(originals):
+        for rel, (saved, original_hash) in originals.items():
+            if sha256_file(game / rel) != original_hash:
+                _copy_replace(saved, game / rel)
+
+    with workspace_lock(game / FONT_BACKUP_DIR_NAME):
+        originals = _font_originals(game, state)
+        # 항상 원본에서 다시 시작: 다른 폰트로 바꿀 때 이전 패치가 남지 않게
+        restore(originals)
+        state.data.pop("font", None)
+        state.save()
+        if wanted["mode"] == "none":
+            return wanted
+        with tempfile.TemporaryDirectory(prefix="le-font-", dir=work_root()) as tmp:
+            package = Path(tmp)
+            if wanted["mode"] == "custom":
+                source = {"ttf": "fonts/custom" + Path(wanted["ttf"]).suffix.lower()}
+                (package / "fonts").mkdir()
+                shutil.copyfile(wanted["ttf"], package / source["ttf"])
+                if sha256_file(package / source["ttf"]) != wanted["ttf_sha256"]:
+                    raise RuntimeError("적용 준비 중 폰트 파일이 변경됨. 다시 실행 필요")
+            else:
+                source = {"fontAsset": "Pretendard-Bold"}  # 게임에 이미 들어 있는 폰트 파일
+            # 번들 경로는 도구 기준(Last Epoch_Data 아래)
+            bundles = [rel.relative_to(RESOURCES_RELPATH.parent).as_posix() for rel in files if rel != RESOURCES_RELPATH]
+            manifest = {
+                "dynamicFonts": {name: dict(source) for name in KR_FONT_ASSETS},
+                "dynamicFontBundles": bundles,
+                "cancelIfNoFontReplaced": True,
+            }
+            if wanted["all_text"]:
+                manifest["dynamicFontCharacters"] = FONT_ALL_CHARACTERS
+            write_json(package / "manifest.json", manifest)
+            try:
+                replaced = run_font_tool(tool_exe, game, package, len(bundles))
+            except BaseException:
+                restore(originals)
+                raise
+        state.data["font"] = dict(wanted, patched={rel.as_posix(): sha256_file(game / rel) for rel in files},
+                                  fonts=replaced, date=datetime.now().isoformat())
+        state.save()
+    return wanted
+
+
+def restore_font(game_path):
+    """폰트를 원본으로 되돌림. 되돌릴 것이 없으면 False."""
+    state = PatchState(game_path)
+    if font_is_applied(game_path, state, {"mode": "none"}):
+        if state.data.pop("font", None) is not None:
+            state.save()
+        return False
+    apply_font(game_path, state, {"mode": "none"})
+    return True
+
+
+def _process_alive(pid):
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5  # 접근 거부 = 다른 권한으로 실행 중인 프로세스
+    try:
+        code = wintypes.DWORD()
+        return bool(kernel32.GetExitCodeProcess(wintypes.HANDLE(handle), ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+
+
+def clear_stale_locks(game_path):
+    """적용 도중 패처가 꺼지면 남는 잠금 파일 정리. 지운 경로 목록 반환.
+
+    잠금을 만든 프로세스가 이미 없을 때만 지움. 살아 있는 프로세스의 잠금은 그대로 둬서 동시 실행을 막음.
+    """
+    game = Path(game_path)
+    removed = []
+    for folder in [game / FONT_BACKUP_DIR_NAME, game / Path(BUNDLE_SUBDIR).parent]:
+        lock = folder / ".workbench.lock"
+        if not lock.is_file():
+            continue
+        try:
+            pid = int(json.loads(lock.read_text(encoding="utf-8")).get("pid"))
+        except (OSError, ValueError, TypeError, AttributeError):
+            pid = None  # 쓰다 만 잠금 파일
+        if pid is not None and pid != os.getpid() and _process_alive(pid):
+            continue
+        try:
+            lock.unlink()
+            removed.append(lock)
+        except OSError:
+            pass
+    return removed
+
+
+def restore_all(game_path):
+    """폰트 → 번역 순서로 복원 (번역 복원이 상태 파일을 지우므로). 하나라도 복원했으면 True."""
+    clear_stale_locks(game_path)
+    font = restore_font(game_path)
+    return restore_backup(game_path) or font
+
+
+def find_local_font_tool():
+    """패처 스크립트 옆이나 패키지 폴더에 둔 LEFontPatch.exe (오프라인·개발용)."""
+    here = Path(__file__).resolve().parent
+    for folder in [here, here.parent, Path(sys.executable).parent]:
+        if (folder / FONT_TOOL_NAME).is_file():
+            return folder / FONT_TOOL_NAME
+    return None
+
+
+def fetch_font_tool(release, progress_cb=None):
+    """릴리즈의 LEFontPatch.exe를 SHA256 검증 후 캐시에 저장해 경로 반환."""
+    local = find_local_font_tool()
+    if local:
+        return local
+    releases = [release] + [r for r in github_api_get(GITHUB_API_RELEASES) if r.get("tag_name") != release.get("tag_name")]
+    for candidate in releases:
+        assets = find_release_assets(candidate)
+        if "font_tool" not in assets or "checksums" not in assets:
+            continue
+        expected = download_and_parse_checksums(assets["checksums"]["url"]).get(assets["font_tool"]["name"], "")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+            continue
+        cache = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "LETransKr" / "tools"
+        cached = cache / f"{Path(FONT_TOOL_NAME).stem}-{expected[:16].lower()}.exe"
+        if cached.is_file() and verify_checksum(cached, expected):
+            return cached
+        cache.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".font-tool-", suffix=".tmp", dir=cache)
+        os.close(fd)
+        try:
+            download_file(assets["font_tool"]["url"], name, progress_cb)
+            if not verify_checksum(name, expected):
+                raise RuntimeError(f"{FONT_TOOL_NAME} 체크섬 불일치! 다시 시도해주세요.")
+            os.replace(name, cached)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+        return cached
+    raise RuntimeError(f"릴리즈에서 {FONT_TOOL_NAME}(체크섬 포함)을 찾을 수 없습니다.")
+
+
 # ━━━ 7. 델타 패칭 ━━━
 
 def apply_delta_patch(original, delta, output):
@@ -399,8 +783,10 @@ def apply_delta_patch(original, delta, output):
 # ━━━ 8. 메인 오케스트레이터 ━━━
 
 class PatchOrchestrator:
-    def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None):
+    def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None, font=None):
         self.game_path = game_path
+        self.font = font  # None: 폰트는 건드리지 않음 / {'mode': ..., 'ttf': ...}
+        self._release = None
         self.state = PatchState(game_path)
         self._log = log_cb or (lambda msg: log.info(msg))
         self._status = status_cb or (lambda msg: None)
@@ -420,10 +806,41 @@ class PatchOrchestrator:
         return False
 
     def run(self):
+        for lock in clear_stale_locks(self.game_path):
+            self._log(f"이전 실행이 남긴 잠금 정리: {lock}")
+        result = self._run_translation()
+        if result["success"] and self.font is not None:
+            try:
+                self._run_font(result)
+            except Exception as e:
+                result.update(success=False, message=f"번역 패치는 적용됨. 폰트 적용 실패: {e}")
+                self._log(f"❌ 폰트 오류: {e}")
+                self._status("❌ 폰트 적용 실패")
+                log.exception("Font patch failed")
+        return result
+
+    def _run_font(self, result):
+        wanted = normalize_font(self.font)
+        label = FONT_MODES[wanted["mode"]]
+        if font_is_applied(self.game_path, self.state, wanted):
+            self._log(f"폰트: {label} (변경 없음)")
+            return
+        tool = None
+        if wanted["mode"] != "none":
+            self._status("폰트 도구 준비 중...")
+            tool = fetch_font_tool(self._release, self._dl_progress)
+            self._log(f"LEFontPatch: {tool}")
+        self._status("폰트 적용 중... (1~2분 걸릴 수 있습니다)")
+        apply_font(self.game_path, self.state, wanted, tool)
+        result["message"] += f"\n폰트: {label}"
+        self._log(f"✅ 폰트 적용: {label}")
+        self._status(f"✅ 폰트 적용 완료 ({label})")
+
+    def _run_translation(self):
         result = {"success": False, "version": "", "files": [], "message": ""}
         try:
             self._status("GitHub에서 최신 릴리즈 확인 중...")
-            release = fetch_latest_release()
+            release = self._release = fetch_latest_release()
             tag = release.get("tag_name", "unknown")
             self._log(f"최신 릴리즈: {tag}")
 
@@ -457,7 +874,7 @@ class PatchOrchestrator:
                 raise RuntimeError("한국어 로컬라이제이션 번들을 찾을 수 없습니다.\n게임에서 언어를 한국어로 한번 설정한 후 다시 시도해주세요.")
             self._log(f"번들: {bundle_path}")
 
-            with tempfile.TemporaryDirectory() as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="le-patch-", dir=work_root()) as tmpdir:
                 use_delta = False
                 if 'delta_patch' in assets:
                     self._log('델타의 기준 번들 검증 정보 없음 — 전체 ZIP 사용')
@@ -571,15 +988,28 @@ def run_gui():
         def __init__(self, root):
             self.root = root
             self.root.title(f"Last Epoch 한국어 번역패치 v{PATCHER_VERSION}")
-            self.root.geometry("600x580")
+            self.root.geometry("980x700")
             self.root.resizable(True, True)
-            self.root.minsize(500, 400)
+            self.root.minsize(820, 520)
             self.root.configure(bg=self.BG)
             self.game_path = tk.StringVar()
+            self.font_mode = tk.StringVar(value="none")
+            self.font_file = tk.StringVar()
+            self.font_all_text = tk.BooleanVar(value=True)
             self.status_text = tk.StringVar(value="대기 중...")
+            self._busy = False
+            self._releases = None  # None: 아직 못 받음 / []: 받기 실패
+            self.root.protocol("WM_DELETE_WINDOW", self._on_close)
             self._build_ui()
             self._auto_detect()
             self._check_new_patch_bg()
+
+        def _on_close(self):
+            # 적용 도중 닫으면 게임 파일이 반쯤 바뀐 채 남고 잠금 파일도 지워지지 않음
+            if self._busy:
+                messagebox.showwarning("적용 중", "패치를 적용하는 중입니다. 끝날 때까지 기다려주세요.")
+                return
+            self.root.destroy()
 
         def _build_ui(self):
             s = ttk.Style()
@@ -591,12 +1021,31 @@ def run_gui():
             s.configure("Warn.TLabel", background=self.BG2, foreground=self.WARN, font=("맑은 고딕", 9))
             s.configure("TProgressbar", troughcolor=self.ENTRY_BG, background=self.ACCENT, thickness=20)
 
-            top = tk.Frame(self.root, bg=self.BG)
+            # 왼쪽: 패치 조작 / 오른쪽: 릴리즈 노트
+            notes = tk.Frame(self.root, bg=self.BG)
+            notes.pack(side="right", fill="both", expand=True, padx=(0, 24), pady=(20, 20))
+            self.lbl_notes = ttk.Label(notes, text="업데이트 내용", style="Sub.TLabel")
+            self.lbl_notes.pack(anchor="w")
+            self.notes_text = tk.Text(notes, width=40, bg=self.BG2, fg=self.FG, font=("맑은 고딕", 9), relief="flat", bd=8, wrap="word", state="disabled", cursor="arrow", spacing1=2, spacing3=2)
+            self.notes_text.pack(fill="both", expand=True, pady=(3, 0))
+            self.notes_text.tag_configure("version", foreground=self.ACCENT, font=("맑은 고딕", 11, "bold"), spacing1=10)
+            self.notes_text.tag_configure("date", foreground="#888", font=("맑은 고딕", 8))
+            self.notes_text.tag_configure("bold", font=("맑은 고딕", 9, "bold"), foreground="#ffffff")
+            self.notes_text.tag_configure("item", lmargin1=6, lmargin2=18)
+            self.notes_text.tag_configure("subitem", lmargin1=22, lmargin2=34, foreground="#b0b0c0")
+            self.notes_text.tag_configure("muted", foreground="#888")
+            self._render_notes()
+
+            left = tk.Frame(self.root, bg=self.BG, width=600)
+            left.pack(side="left", fill="both")
+            left.pack_propagate(False)
+
+            top = tk.Frame(left, bg=self.BG)
             top.pack(fill="x", padx=24, pady=(20, 5))
             ttk.Label(top, text="⚔  Last Epoch 한국어 번역패치", style="Title.TLabel").pack(anchor="w")
             ttk.Label(top, text=f"github.com/{GITHUB_REPO}  ·  v{PATCHER_VERSION}", style="Sub.TLabel").pack(anchor="w")
 
-            fp = tk.Frame(self.root, bg=self.BG)
+            fp = tk.Frame(left, bg=self.BG)
             fp.pack(fill="x", padx=24, pady=(15, 5))
             ttk.Label(fp, text="게임 경로", style="Sub.TLabel").pack(anchor="w")
             fe = tk.Frame(fp, bg=self.BG)
@@ -605,36 +1054,76 @@ def run_gui():
             self.entry_path.pack(side="left", fill="x", expand=True)
             ttk.Button(fe, text="찾기", command=self._browse).pack(side="right", padx=(5, 0))
 
-            fi = tk.Frame(self.root, bg=self.BG2, bd=1, relief="solid")
+            fi = tk.Frame(left, bg=self.BG2, bd=1, relief="solid")
             fi.pack(fill="x", padx=24, pady=(10, 5))
             self.lbl_patch = ttk.Label(fi, text="  📦 패치 상태: 확인 중...", style="Info.TLabel")
             self.lbl_patch.pack(anchor="w", padx=8, pady=6)
             self.lbl_game = ttk.Label(fi, text="", style="Info.TLabel")
             self.lbl_game.pack(anchor="w", padx=8, pady=(0, 6))
 
-            fo = tk.Frame(self.root, bg=self.BG)
+            fo = tk.Frame(left, bg=self.BG)
             fo.pack(fill="x", padx=24, pady=(10, 5))
             self.do_force = tk.BooleanVar(value=False)
             for text, var in [("강제 재적용 (같은 버전이어도)", self.do_force)]:
                 tk.Checkbutton(fo, text=text, variable=var, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w")
 
-            fp2 = tk.Frame(self.root, bg=self.BG)
+            ff = tk.Frame(left, bg=self.BG)
+            ff.pack(fill="x", padx=24, pady=(10, 0))
+            ttk.Label(ff, text="한국어 폰트", style="Sub.TLabel").pack(anchor="w")
+            for mode, text in FONT_MODES.items():
+                tk.Radiobutton(ff, text=text, variable=self.font_mode, value=mode, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w")
+            ffe = tk.Frame(ff, bg=self.BG)
+            ffe.pack(fill="x", padx=(22, 0))
+            tk.Entry(ffe, textvariable=self.font_file, font=("Consolas", 9), bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG, relief="flat", bd=4).pack(side="left", fill="x", expand=True)
+            ttk.Button(ffe, text="폰트 찾기", command=self._browse_font).pack(side="right", padx=(5, 0))
+            tk.Checkbutton(ff, text="영문·숫자·기호도 선택한 폰트로 (끄면 한글만)", variable=self.font_all_text, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w", pady=(4, 0))
+
+            fp2 = tk.Frame(left, bg=self.BG)
             fp2.pack(fill="x", padx=24, pady=(10, 5))
             self.progress = ttk.Progressbar(fp2, mode="determinate", style="TProgressbar")
             self.progress.pack(fill="x")
             ttk.Label(fp2, textvariable=self.status_text, style="Status.TLabel").pack(anchor="w", pady=(3, 0))
 
-            fl = tk.Frame(self.root, bg=self.BG)
+            fl = tk.Frame(left, bg=self.BG)
             fl.pack(fill="both", expand=True, padx=24, pady=(5, 10))
             self.log_text = tk.Text(fl, height=7, bg=self.ENTRY_BG, fg="#7a7a9a", font=("Consolas", 8), relief="flat", bd=5, state="disabled")
             self.log_text.pack(fill="both", expand=True)
 
-            fb = tk.Frame(self.root, bg=self.BG)
+            fb = tk.Frame(left, bg=self.BG)
             fb.pack(fill="x", padx=24, pady=(0, 20))
             self.btn_apply = ttk.Button(fb, text="🚀 패치 적용", command=self._start)
             self.btn_apply.pack(side="left", fill="x", expand=True, ipady=8)
             self.btn_restore = ttk.Button(fb, text="↩ 복원", command=self._restore)
             self.btn_restore.pack(side="right", padx=(10, 0), ipady=8)
+
+        def _render_notes(self):
+            """오른쪽 칸에 적용된 버전 이후의 릴리즈 노트(주요 작업)를 표시."""
+            gp = self.game_path.get().strip()
+            current = PatchState(gp).patch_version if gp and Path(gp).is_dir() else None
+            box = self.notes_text
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            if not self._releases:
+                self.lbl_notes.configure(text="업데이트 내용")
+                box.insert("end", "릴리즈 노트를 불러오는 중..." if self._releases is None else "릴리즈 노트를 불러오지 못했습니다.", "muted")
+                box.configure(state="disabled")
+                return
+            entries = changelog_since(self._releases, current)
+            pending = bool(current) and any(parse_version(e["tag"]) > parse_version(current) for e in entries)
+            self.lbl_notes.configure(text=f"새로 적용될 내용 ({current} → {entries[0]['tag']})" if pending else "최신 릴리즈 내용")
+            for entry in entries:
+                box.insert("end", entry["title"] + "\n", "version")
+                box.insert("end", entry["date"] + "\n", "date")
+                for line in entry["lines"]:
+                    if not line.strip():
+                        continue
+                    lead, spans = markdown_spans(line)
+                    tag = ("subitem" if line.startswith(" ") else "item") if lead else None
+                    box.insert("end", lead, tag)
+                    for text, bold in spans:
+                        box.insert("end", text, tuple(t for t in (tag, "bold" if bold else None) if t))
+                    box.insert("end", "\n", tag)
+            box.configure(state="disabled")
 
         def _log(self, msg):
             self.log_text.configure(state="normal")
@@ -676,6 +1165,12 @@ def run_gui():
             else:
                 self.lbl_patch.configure(text="  📦 패치 미적용")
                 self.lbl_game.configure(text=f"  🎮 게임 빌드: {bid or '?'}")
+            font = state.data.get("font") or {}
+            self.font_mode.set(font.get("mode") if font.get("mode") in FONT_MODES else "none")
+            if font.get("ttf"):
+                self.font_file.set(font["ttf"])
+            self.font_all_text.set(font.get("all_text", True))
+            self._render_notes()
 
         def _browse(self):
             p = filedialog.askdirectory(title="Last Epoch 폴더")
@@ -683,9 +1178,24 @@ def run_gui():
                 self.game_path.set(p)
                 self._refresh_info(p)
 
+        def _browse_font(self):
+            p = filedialog.askopenfilename(title="폰트 파일", filetypes=[("폰트 파일", "*.ttf *.otf")])
+            if p:
+                self.font_file.set(p)
+                self.font_mode.set("custom")
+
         def _check_new_patch_bg(self):
-            """백그라운드에서 새 번역 업데이트 확인."""
+            """백그라운드에서 새 번역 업데이트 확인 + 릴리즈 노트 받기."""
+            def show_notes(releases):
+                self._releases = releases
+                self._render_notes()
+
             def check():
+                try:
+                    releases = github_api_get(GITHUB_API_RELEASES)
+                except Exception:
+                    releases = []
+                self.root.after(0, show_notes, releases)
                 try:
                     gp = self.game_path.get().strip()
                     if not gp:
@@ -714,17 +1224,24 @@ def run_gui():
             if not gp or not Path(gp).exists():
                 messagebox.showerror("오류", "유효한 게임 경로를 지정해주세요.")
                 return
+            try:
+                font = normalize_font({"mode": self.font_mode.get(), "ttf": self.font_file.get().strip(), "all_text": self.font_all_text.get()})
+            except ValueError as exc:
+                messagebox.showerror("오류", str(exc))
+                return
             self.btn_apply.configure(state="disabled")
             self.btn_restore.configure(state="disabled")
             self.progress["value"] = 0
-            threading.Thread(target=self._run_patch, args=(gp, self.do_force.get()), daemon=True).start()
+            self._busy = True
+            threading.Thread(target=self._run_patch, args=(gp, self.do_force.get(), font), daemon=True).start()
 
-        def _run_patch(self, gp, force=False):
-            orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t))
+        def _run_patch(self, gp, force=False, font=None):
+            orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t), font=font)
             if force:
                 orch.state.data.pop("patch_version", None)
             res = orch.run()
             def done():
+                self._busy = False
                 self.btn_apply.configure(state="normal")
                 self.btn_restore.configure(state="normal")
                 self._refresh_info(gp)
@@ -740,10 +1257,10 @@ def run_gui():
             if not gp:
                 messagebox.showerror("오류", "경로를 지정해주세요.")
                 return
-            if not messagebox.askyesno("확인", "백업에서 복원하시겠습니까?"):
+            if not messagebox.askyesno("확인", "백업에서 복원하시겠습니까?\n(번역과 폰트 모두 원본으로 되돌립니다)"):
                 return
             try:
-                restored = restore_backup(gp)
+                restored = restore_all(gp)
             except Exception as exc:
                 messagebox.showerror("복원 실패", str(exc))
                 return
@@ -769,7 +1286,12 @@ def run_cli():
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--restore", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--font", choices=list(FONT_MODES), help="한국어 폰트 (생략 시 폰트는 건드리지 않음)")
+    parser.add_argument("--font-file", help="--font custom에 쓸 .ttf/.otf 경로")
+    parser.add_argument("--font-korean-only", action="store_true", help="영문·숫자·기호는 게임 원래 폰트로 둠")
     args = parser.parse_args()
+    if args.font_file and not args.font:
+        args.font = "custom"
 
     print(f"\n{'=' * 55}\n  Last Epoch 한국어 번역패치 v{PATCHER_VERSION}\n  github.com/{GITHUB_REPO}\n{'=' * 55}\n")
 
@@ -796,11 +1318,20 @@ def run_cli():
             print(f"  패치: {st.patch_version} ({st.data.get('patch_date', '?')[:10]})")
         else:
             print("  패치 미적용")
+        print(f"  폰트: {FONT_MODES.get((st.data.get('font') or {}).get('mode'), FONT_MODES['none'])}")
         return
 
     if args.restore:
-        print("✅ 복원 완료!" if restore_backup(gp) else "❌ 백업 없음")
+        print("✅ 복원 완료!" if restore_all(gp) else "❌ 백업 없음")
         return
+
+    font = None
+    if args.font:
+        try:
+            font = normalize_font({"mode": args.font, "ttf": args.font_file, "all_text": not args.font_korean_only})
+        except ValueError as exc:
+            print(f"오류: {exc}")
+            sys.exit(1)
 
     def cli_prog(dl, tot):
         if tot > 0:
@@ -808,7 +1339,7 @@ def run_cli():
             bar = "█" * int(pct // 2) + "░" * (50 - int(pct // 2))
             print(f"\r  [{bar}] {pct:.0f}%", end="", flush=True)
 
-    orch = PatchOrchestrator(gp, log_cb=lambda m: print(f"  {m}"), status_cb=lambda m: print(f"\n  >> {m}"), progress_cb=cli_prog)
+    orch = PatchOrchestrator(gp, log_cb=lambda m: print(f"  {m}"), status_cb=lambda m: print(f"\n  >> {m}"), progress_cb=cli_prog, font=font)
     if args.force:
         orch.state.data.pop("patch_version", None)
     res = orch.run()

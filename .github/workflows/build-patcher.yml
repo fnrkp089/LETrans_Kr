@@ -1,16 +1,14 @@
-name: Build Patcher EXE
+name: Build Patcher Package
 
-# 패처 코드(patcher.py)가 바뀔 때만 수동으로 실행!
+# 패처 코드(patcher/)가 바뀔 때만 수동으로 실행!
 # 번역 데이터만 올릴 때는 실행하지 않음.
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: 'exe를 첨부할 릴리즈 tag (예: v0.4.1)'
-        required: true
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   build-patcher:
@@ -18,21 +16,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python 3.14
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
-      - name: Install dependencies
-        run: pip install pyinstaller detools certifi
+      - name: Test
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests -v
 
-      - name: Build EXE
+      # PyInstaller 미사용: python.org 서명본 런타임 + 패처 소스(.py) 그대로
+      - name: Build package
+        id: build
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
-          cd patcher
-          pyinstaller --onefile --windowed --name "LastEpoch_KR_Patcher" --hidden-import certifi --collect-data certifi --clean patcher.py
+          python patcher/build_package.py --out dist
+          $zip = Get-ChildItem dist -Filter "LastEpoch_KR_Patcher-v*.zip"
+          "zip=dist/$($zip.Name)" >> $env:GITHUB_OUTPUT
+          "name=$($zip.BaseName)" >> $env:GITHUB_OUTPUT
 
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v2
+      - name: Smoke test
+        run: dist\LastEpoch_KR_Patcher\runtime\python.exe -B -c "import patcher, tkinter, ssl; print(patcher.PATCHER_VERSION)"
+
+      # 이 zip이 이 저장소의 이 커밋에서 빌드됐다는 증명 (gh attestation verify로 확인)
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
         with:
-          tag_name: ${{ github.event.inputs.release_tag }}
-          files: patcher/dist/LastEpoch_KR_Patcher.exe
+          subject-path: ${{ steps.build.outputs.zip }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.name }}
+          path: ${{ steps.build.outputs.zip }}
+          compression-level: 0

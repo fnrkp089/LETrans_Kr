@@ -47,7 +47,8 @@ def export_locale(executable, bundle, destination, language):
     return len(files)
 
 
-def import_locale(executable, bundle, source):
+def import_locale(executable, bundle, source, workdir=None):
+    """workdir: 스테이징 폴더를 만들 위치 (기본: 시스템 TEMP)."""
     bundle, source = Path(bundle).resolve(), Path(source).resolve()
     if not bundle.is_file():
         raise FileNotFoundError(bundle)
@@ -58,7 +59,7 @@ def import_locale(executable, bundle, source):
         raise FileNotFoundError('번들의 상위 폴더에서 catalog.bin/json/bundle을 찾을 수 없음')
     original_hashes = {bundle: file_hash(bundle), catalog: file_hash(catalog)}
     # Snapshot source JSON as well; edits during the external process cannot leak in.
-    with tempfile.TemporaryDirectory(prefix='le-import-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='le-import-', dir=workdir) as tmp:
         root = Path(tmp); staged_bundle = root / bundle.parent.name / bundle.name
         staged_bundle.parent.mkdir()
         staged_catalog = root / catalog.name
