@@ -10,6 +10,7 @@ python.org가 배포하는 Windows용 Python을 받아 해시를 확인하고, �
 
 import argparse
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -123,9 +124,12 @@ def build_runtime(archive, runtime):
 
 def verify_signatures(package):
     """exe/dll/pyd가 전부 유효한 서명본인지 확인. 하나라도 아니면 빌드 실패"""
-    script = ("$bad = Get-ChildItem -LiteralPath $args[0] -Recurse -File -Include *.exe,*.dll,*.pyd | "
-              "Where-Object { (Get-AuthenticodeSignature -LiteralPath $_.FullName).Status -ne 'Valid' }; "
-              "$bad | ForEach-Object { $_.FullName }; if ($bad) { exit 1 }")
+    # -Include는 PowerShell 버전에 따라 -LiteralPath에서 무시되므로 확장자로 직접 거름
+    script = ("$bin = @(Get-ChildItem -LiteralPath $args[0] -Recurse -File | "
+              "Where-Object { '.exe','.dll','.pyd' -contains $_.Extension.ToLower() }); "
+              "if ($bin.Count -lt 10) { 'binaries: ' + $bin.Count; exit 1 }; "
+              "$bad = @($bin | Where-Object { (Get-AuthenticodeSignature -LiteralPath $_.FullName).Status -ne 'Valid' }); "
+              "$bad | ForEach-Object { $_.FullName }; if ($bad.Count) { exit 1 }")
     result = subprocess.run(["powershell", "-NoProfile", "-Command", f"& {{ {script} }}", str(package)],
                             capture_output=True, text=True)
     if result.returncode != 0:
@@ -145,6 +149,9 @@ def build(out):
     (package / "app").mkdir()
     for name in APP_FILES:
         shutil.copyfile(HERE / name, package / "app" / name)
+    # 패처 자체 업데이트가 읽음: python이 같을 때만 app 폴더만 교체
+    (package / "app" / "package.json").write_text(
+        json.dumps({"patcher": version, "python": PYTHON_VERSION}, indent=2) + "\n", encoding="utf-8", newline="\n")
     # cmd는 UTF-8(BOM 없음)·CRLF. 한글은 chcp 65001 뒤에서만 출력
     (package / f"{PACKAGE_NAME}.cmd").write_text(LAUNCHER, encoding="utf-8", newline="\r\n")
     (package / "README.txt").write_text(README.format(version=version, python=PYTHON_VERSION),
@@ -154,7 +161,12 @@ def build(out):
 
     target = out / f"{PACKAGE_NAME}-v{version}.zip"
     write_zip(target, out, [p for p in package.rglob("*") if p.is_file()])
-    print(f"{target}  {target.stat().st_size / 1e6:.1f} MB\nSHA256 {sha256_file(target)}")
+    # 자체 업데이트용: app 폴더만 (기존 사용자는 이것만 받아 교체)
+    app_zip = out / f"{PACKAGE_NAME}-app-v{version}.zip"
+    write_zip(app_zip, package / "app", [p for p in (package / "app").iterdir() if p.is_file()])
+    sums = "".join(f"{sha256_file(p)}  {p.name}\n" for p in (target, app_zip))
+    (out / "SHA256SUMS").write_text(sums, encoding="ascii", newline="\n")
+    print(f"{target}  {target.stat().st_size / 1e6:.1f} MB\n{app_zip}  {app_zip.stat().st_size / 1e3:.0f} KB\n{sums}", end="")
     return target
 
 

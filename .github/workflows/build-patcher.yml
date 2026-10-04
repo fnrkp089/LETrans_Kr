@@ -34,21 +34,23 @@ jobs:
         run: |
           python patcher/build_package.py --out dist
           $zip = Get-ChildItem dist -Filter "LastEpoch_KR_Patcher-v*.zip"
-          "zip=dist/$($zip.Name)" >> $env:GITHUB_OUTPUT
           "name=$($zip.BaseName)" >> $env:GITHUB_OUTPUT
 
       - name: Smoke test
         run: dist\LastEpoch_KR_Patcher\runtime\python.exe -B -c "import patcher, tkinter, ssl; print(patcher.PATCHER_VERSION)"
 
-      # 이 zip이 이 저장소의 이 커밋에서 빌드됐다는 증명 (gh attestation verify로 확인)
+      # 이 zip들이 이 저장소의 이 커밋에서 빌드됐다는 증명 (gh attestation verify로 확인)
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: ${{ steps.build.outputs.zip }}
+          subject-path: dist/LastEpoch_KR_Patcher-*.zip
 
+      # 전체 패키지, 자체 업데이트용 app zip, SHA256SUMS
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.build.outputs.name }}
-          path: ${{ steps.build.outputs.zip }}
+          path: |
+            dist/LastEpoch_KR_Patcher-*.zip
+            dist/SHA256SUMS
           compression-level: 0

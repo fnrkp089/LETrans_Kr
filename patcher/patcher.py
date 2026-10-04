@@ -52,6 +52,9 @@ PATCHER_VERSION = "0.8.0"
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
 USER_AGENT = f"LastEpoch-KR-Patcher/{PATCHER_VERSION}"
+# 패처 패키지는 번역 릴리즈(vX.Y.Z)와 따로 patcher-vX.Y.Z 태그로 올림
+PATCHER_TAG_PREFIX = "patcher-v"
+PACKAGE_INFO = "package.json"
 
 BUNDLE_SUBDIR = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "StandaloneWindows64"
 BUNDLE_FILENAME = "localization-string-tables-korean(ko)_assets_all.bundle"
@@ -767,6 +770,90 @@ def fetch_font_tool(release, progress_cb=None):
     raise RuntimeError(f"릴리즈에서 {FONT_TOOL_NAME}(체크섬 포함)을 찾을 수 없습니다.")
 
 
+# ━━━ 6c. 패처 자체 업데이트 ━━━
+
+def package_dir():
+    """배포 패키지(app\\ + runtime\\)로 실행 중이면 app 폴더, 소스로 실행 중이면 None."""
+    app = Path(__file__).resolve().parent
+    return app if (app / PACKAGE_INFO).is_file() and (app.parent / "runtime").is_dir() else None
+
+
+def find_patcher_update(releases, current=PATCHER_VERSION):
+    """현재보다 새 패처 릴리즈(patcher-vX.Y.Z) 중 가장 높은 버전. 없으면 None."""
+    best = None
+    for r in releases or []:
+        tag = r.get("tag_name") or ""
+        if not tag.startswith(PATCHER_TAG_PREFIX) or r.get("draft") or r.get("prerelease"):
+            continue
+        version = tag[len(PATCHER_TAG_PREFIX):]
+        if parse_version(version) <= parse_version(best["version"] if best else current):
+            continue
+        assets = {a["name"]: a["browser_download_url"] for a in r.get("assets", [])}
+        name = f"LastEpoch_KR_Patcher-app-v{version}.zip"
+        best = {"version": version, "tag": tag, "page": r.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases",
+                "name": name, "url": assets.get(name), "checksums": assets.get("SHA256SUMS")}
+    return best
+
+
+def apply_patcher_update(update, progress_cb=None):
+    """새 패처 소스(app zip)를 받아 SHA256·실행 확인 후 app 폴더를 통째로 교체.
+
+    runtime\\은 실행 중이라 바꿀 수 없으므로, Python 버전이 달라진 업데이트는 거부하고 새 패키지를 받게 함.
+    """
+    app = package_dir()
+    if not app:
+        raise RuntimeError("배포 패키지로 실행 중이 아니어서 자동 업데이트할 수 없습니다.")
+    if not update.get("url") or not update.get("checksums"):
+        raise RuntimeError("릴리즈에 패처 업데이트 파일이 없습니다.")
+    expected = download_and_parse_checksums(update["checksums"]).get(update["name"], "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+        raise RuntimeError("패처 업데이트의 체크섬 정보가 없습니다.")
+    try:
+        stage = Path(tempfile.mkdtemp(prefix=".update-", dir=app.parent))
+    except OSError as exc:
+        raise RuntimeError(f"패처 폴더에 쓸 수 없습니다: {exc}")
+    old = app.with_name("app.old")
+    try:
+        archive = stage / update["name"]
+        download_file(update["url"], archive, progress_cb)
+        if not verify_checksum(archive, expected):
+            raise RuntimeError("패처 업데이트 체크섬 불일치! 다시 시도해주세요.")
+        new = stage / "app"
+        new.mkdir()
+        extract_checked(archive, new)
+        info = json.loads((new / PACKAGE_INFO).read_text(encoding="utf-8"))
+        if info.get("patcher") != update["version"]:
+            raise RuntimeError("패처 업데이트 파일의 버전이 릴리즈와 다릅니다.")
+        if info.get("python") != json.loads((app / PACKAGE_INFO).read_text(encoding="utf-8")).get("python"):
+            raise RuntimeError("이번 업데이트는 Python 런타임도 바뀌어서 새 패키지를 직접 받아야 합니다.")
+        # 새 소스가 지금 런타임에서 뜨는지 확인한 뒤에 교체
+        check = subprocess.run(
+            [str(Path(sys.executable).with_name("python.exe")), "-B", "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); import patcher; print(patcher.PATCHER_VERSION)", str(new)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if check.returncode != 0 or check.stdout.strip() != update["version"]:
+            raise RuntimeError("새 패처가 실행 확인을 통과하지 못했습니다.")
+        shutil.rmtree(old, ignore_errors=True)
+        try:
+            os.replace(app, old)
+        except OSError as exc:
+            raise RuntimeError(f"패처 폴더를 바꿀 수 없습니다: {exc}")
+        try:
+            os.replace(new, app)
+        except OSError as exc:
+            os.replace(old, app)
+            raise RuntimeError(f"패처 폴더를 바꿀 수 없습니다: {exc}")
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    shutil.rmtree(old, ignore_errors=True)
+    return app / "patcher.py"
+
+
+def restart_patcher(script):
+    subprocess.Popen([sys.executable, "-B", str(script)] + sys.argv[1:], close_fds=True)
+
+
 # ━━━ 7. 델타 패칭 ━━━
 
 def apply_delta_patch(original, delta, output):
@@ -1196,6 +1283,9 @@ def run_gui():
                 except Exception:
                     releases = []
                 self.root.after(0, show_notes, releases)
+                update = find_patcher_update(releases)
+                if update:
+                    self.root.after(0, self._offer_patcher_update, update)
                 try:
                     gp = self.game_path.get().strip()
                     if not gp:
@@ -1208,6 +1298,43 @@ def run_gui():
                 except Exception:
                     pass
             threading.Thread(target=check, daemon=True).start()
+
+        def _offer_patcher_update(self, update):
+            """새 패처가 있으면 물어보고 받아서 교체한 뒤 다시 시작."""
+            self._log(f"🔔 새 패처 v{update['version']} (현재 v{PATCHER_VERSION})")
+            if self._busy:
+                return
+            if not package_dir():
+                self._log(f"   받기: {update['page']}")
+                return
+            if not messagebox.askyesno("패처 업데이트", f"새 패처 v{update['version']}이 있습니다. (현재 v{PATCHER_VERSION})\n\n지금 업데이트하고 다시 시작할까요?"):
+                return
+            self._busy = True
+            self.btn_apply.configure(state="disabled")
+            self.btn_restore.configure(state="disabled")
+            self._status("패처 업데이트 중...")
+
+            def work():
+                try:
+                    script = apply_patcher_update(update, lambda c, t: self.root.after(0, self._prog, c, t))
+                except Exception as exc:
+                    self.root.after(0, failed, str(exc))
+                    return
+                self.root.after(0, restart, script)
+
+            def restart(script):
+                restart_patcher(script)
+                self.root.destroy()
+
+            def failed(reason):
+                self._busy = False
+                self.btn_apply.configure(state="normal")
+                self.btn_restore.configure(state="normal")
+                self._log(f"❌ 패처 업데이트 실패: {reason}")
+                self._status("패처 업데이트 실패 — 지금 버전으로 계속 사용할 수 있습니다.")
+                messagebox.showerror("패처 업데이트 실패", f"{reason}\n\n새 패키지 받기:\n{update['page']}")
+
+            threading.Thread(target=work, daemon=True).start()
 
         def _notify_new_patch(self, new_ver, current_ver):
             """새 번역 업데이트 알림 표시."""

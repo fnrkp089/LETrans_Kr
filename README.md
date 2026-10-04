@@ -57,7 +57,16 @@ LELocalePatch는 실제 번들에 존재하는 키만 수정하며 게임 내 �
 ## 릴리즈 구성
 
 - 번역 릴리즈 `v<버전>`: `kr-patch-<버전>.zip`(LELocalePatch.exe와 `*_ko.json` 테이블), `LEFontPatch.exe`, `SHA256SUMS`, `release_manifest.json`. 패처는 최신 번역 릴리즈를 받아 적용함.
-- 패처 릴리즈 `patcher-v<버전>`: `LastEpoch_KR_Patcher-v<버전>.zip`. 패처 코드가 바뀔 때만 새로 올림.
+- 패처 릴리즈 `patcher-v<버전>`: `LastEpoch_KR_Patcher-v<버전>.zip`(전체 패키지), `LastEpoch_KR_Patcher-app-v<버전>.zip`(자체 업데이트용, `app\`만), `SHA256SUMS`. 패처 코드가 바뀔 때만 새로 올림. 번역 릴리즈가 계속 Latest여야 하므로 Latest로 지정하지 않음.
+
+## 패처 자체 업데이트
+
+패처는 시작할 때 `patcher-v*` 릴리즈를 확인하고, 새 버전이 있으면 물어본 뒤 스스로 업데이트하고 다시 시작함.
+
+- `LastEpoch_KR_Patcher-app-v<버전>.zip`을 받아 `SHA256SUMS`와 대조.
+- 새 소스가 지금 런타임에서 뜨는지 확인한 뒤 `app\` 폴더를 통째로 교체. 실패하면 지금 버전 그대로 둠.
+- `runtime\`은 건드리지 않음. Python 버전이 바뀐 업데이트는 자동으로 못 하므로 새 패키지를 받으라고 안내함.
+- 소스로 직접 실행한 경우에는 알림만 표시.
 
 번역 릴리즈 준비는 [시즌 작업 가이드](https://github.com/fnrkp089/lastepoch-kr-patch_workbench/blob/main/docs/SEASON5_WORKFLOW.md)의 검증과 패키징 절차 사용.
 
