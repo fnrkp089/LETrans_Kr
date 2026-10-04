@@ -34,7 +34,8 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#AppName}
-UninstallDisplayIcon={app}\runtime\pythonw.exe
+UninstallDisplayIcon={app}\app\icon.ico
+SetupIconFile={#SourceDir}\app\icon.ico
 VersionInfoVersion={#AppVersion}
 CloseApplications=no
 
@@ -52,8 +53,8 @@ Name: "desktopicon"; Description: "바탕 화면에 바로가기 만들기"
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: "{#Launch}"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: "{#Launch}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: "{#Launch}"; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\runtime\pythonw.exe"; Parameters: "{#Launch}"; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\runtime\pythonw.exe"; Parameters: "{#Launch}"; WorkingDir: "{app}"; Description: "{#AppName} 실행"; Flags: postinstall nowait skipifsilent

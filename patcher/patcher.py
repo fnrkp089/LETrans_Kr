@@ -55,6 +55,7 @@ USER_AGENT = f"LastEpoch-KR-Patcher/{PATCHER_VERSION}"
 # 패처 패키지는 번역 릴리즈(vX.Y.Z)와 따로 patcher-vX.Y.Z 태그로 올림
 PATCHER_TAG_PREFIX = "patcher-v"
 PACKAGE_INFO = "package.json"
+APP_ICON = "icon.ico"
 
 BUNDLE_SUBDIR = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "StandaloneWindows64"
 BUNDLE_FILENAME = "localization-string-tables-korean(ko)_assets_all.bundle"
@@ -1398,7 +1399,20 @@ def run_gui():
             else:
                 messagebox.showerror("오류", "백업을 찾을 수 없습니다.")
 
+    if sys.platform == "win32":
+        try:
+            # 작업 표시줄에 pythonw가 아니라 패처 아이콘으로 표시
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("fnrkp089.LETransKr.Patcher")
+        except Exception:
+            pass
     root = tk.Tk()
+    icon = Path(__file__).resolve().parent / APP_ICON
+    if icon.is_file():
+        try:
+            root.iconbitmap(default=str(icon))
+        except Exception:
+            pass
     PatcherApp(root)
     root.mainloop()
 

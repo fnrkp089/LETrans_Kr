@@ -27,7 +27,7 @@ PYTHON_SHA256 = "ac1a727a71738e11de80b76e975f9b8a258aea6412bfc31696b929d59c6aafd
 PYTHON_TAG = "python" + "".join(PYTHON_VERSION.split(".")[:2])
 
 PACKAGE_NAME = "LastEpoch_KR_Patcher"
-APP_FILES = ["patcher.py", "locale_runner.py", "workbench_common.py"]
+APP_FILES = ["patcher.py", "locale_runner.py", "workbench_common.py", "icon.ico"]
 
 # 패처가 쓰지 않는 런타임 구성요소
 PRUNE_ROOT = ["Doc", "include", "libs", "Scripts", "__install__.json"]
