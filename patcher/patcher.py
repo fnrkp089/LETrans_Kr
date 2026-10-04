@@ -6,6 +6,7 @@ GitHub: fnrkp089/LETrans_Kr
 import os
 from workbench_common import write_json, atomic_write, workspace_lock
 from locale_runner import import_locale, run_checked
+import unity_bundle
 import re
 import sys
 import json
@@ -67,10 +68,14 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.8.1"
+PATCHER_VERSION = "0.8.2"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
+# 목록은 기본 30개까지만 오므로 한 번에 받을 수 있는 최대로 요청
+GITHUB_API_RELEASE_LIST = f"{GITHUB_API_RELEASES}?per_page=100"
+# 업데이트 내용 칸에 보여줄 첫 릴리즈 (시즌 5 공식 번역 기반으로 다시 시작한 버전)
+HISTORY_SINCE = "v1.0.0"
 USER_AGENT = f"LastEpoch-KR-Patcher/{PATCHER_VERSION}"
 # 패처 패키지는 번역 릴리즈(vX.Y.Z)와 따로 patcher-vX.Y.Z 태그로 올림
 PATCHER_TAG_PREFIX = "patcher-v"
@@ -83,6 +88,12 @@ CATALOG_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "catalog.
 
 PATCH_STATE_FILE = "kr_patch_state.json"
 BACKUP_DIR_NAME = "kr_patch_backup"
+
+# 모든 언어가 같이 쓰는 키 이름표. 게임이 찾는 이름이 여기 없으면 번역이 있어도 키 번호가 그대로 나옴
+SHARED_BUNDLE_FILENAME = "localization-assets-shared_assets_all.bundle"
+# {게임에 빠진 키 이름: 같은 글을 가리키는 기존 키 이름}
+# 1156(마나 및 마나 재생 증가): 제련 창이 찾는 DisplayName 키가 없어 이름이 "1156"으로 나옴
+KEY_ALIASES = {"Item_Affix_1156_DisplayName": "Item_Affix_1156_LootFilterOverride"}
 
 # 폰트 패치 (LEFontPatch): 한국어 폰트 에셋은 번역 번들이 아니라 resources.assets와,
 # UI 대부분이 쓰는 사본이 든 PermaLoad.bundle 두 곳에 있음. 한쪽만 바꾸면 글자마다 폰트가 섞임
@@ -230,15 +241,16 @@ def release_highlights(body):
     return lines
 
 
-def changelog_since(releases, current_version, limit=5):
-    """적용된 버전보다 새 릴리즈들(최신순). 이미 최신이거나 미적용이면 최신 릴리즈 하나."""
+def release_history(releases, current_version, since=HISTORY_SINCE):
+    """since부터의 번역 릴리즈 전부(최신순). 적용된 버전보다 새것에는 new 표시."""
     # 번역 릴리즈(vX.Y.Z)만. 패처 패키지 릴리즈(patcher-vX.Y.Z)는 제외
     published = [r for r in releases if re.match(r"v\d", r.get("tag_name") or "")
-                 and not r.get("draft") and not r.get("prerelease")]
+                 and not r.get("draft") and not r.get("prerelease")
+                 and parse_version(r["tag_name"]) >= parse_version(since)]
     published.sort(key=lambda r: parse_version(r["tag_name"]), reverse=True)
-    newer = [r for r in published if current_version and parse_version(r["tag_name"]) > parse_version(current_version)]
     return [{"tag": r["tag_name"], "title": r.get("name") or r["tag_name"], "date": (r.get("published_at") or "")[:10],
-             "lines": release_highlights(r.get("body"))} for r in (newer or published[:1])[:limit]]
+             "new": bool(current_version) and parse_version(r["tag_name"]) > parse_version(current_version),
+             "lines": release_highlights(r.get("body"))} for r in published]
 
 
 def markdown_spans(line):
@@ -349,7 +361,8 @@ def _backup_files(game, backup_dir, metadata):
         if record.get('sha256') and sha256_file(saved) != record['sha256']:
             raise RuntimeError(f'백업 해시 불일치: {name}')
         pairs.append((saved, target))
-    if len(pairs) != 2:
+    # bundle/catalog 쌍은 필수, 공용 키 번들은 고쳤을 때만 들어 있음
+    if len([name for name in names if name != SHARED_BUNDLE_FILENAME]) != 2:
         raise RuntimeError('bundle/catalog 백업 쌍이 필요함')
     return pairs
 
@@ -383,6 +396,13 @@ def create_backup(game_path):
             for path in [bundle, catalog]:
                 shutil.copy2(path, stage / path.name)
                 files[path.name] = {'path': str(path.relative_to(game)), 'sha256': sha256_file(stage / path.name)}
+            # 게임 업데이트가 우리가 고친 공용 키 번들을 그대로 뒀으면 그 원본은 이전 백업에만 있음
+            shared = bundle.parent / SHARED_BUNDLE_FILENAME
+            old = (json.loads(metadata_path.read_text(encoding='utf-8')).get('files') or {}).get(shared.name) if metadata_path.exists() else None
+            if (old and (backup_dir / shared.name).is_file() and shared.is_file()
+                    and sha256_file(shared) == PatchState(game_path).data.get('shared_bundle_hash')):
+                shutil.copy2(backup_dir / shared.name, stage / shared.name)
+                files[shared.name] = old
             write_json(stage / 'backup_state.json', {'buildid': buildid, 'files': files})
             archive = None
             if backup_dir.exists():
@@ -420,6 +440,37 @@ def restore_backup(game_path):
             raise
         (game / PATCH_STATE_FILE).unlink(missing_ok=True)
     return True
+
+
+def apply_key_aliases(game_path, state):
+    """공용 키 번들에 빠진 키 이름(KEY_ALIASES)을 추가. 추가한 이름들 반환.
+
+    이미 있으면(게임이 고쳤거나 전에 추가함) 파일을 건드리지 않고 [] 반환.
+    고치기 전 원본은 번역 백업에 넣어 복원 때 카탈로그와 같이 되돌림: 카탈로그만 원본이면 고친 번들이 CRC 검사에 걸림.
+    """
+    game = Path(game_path).resolve()
+    shared = game / BUNDLE_SUBDIR / SHARED_BUNDLE_FILENAME
+    if not shared.is_file():
+        return []
+    backup_dir = game / BACKUP_DIR_NAME
+    metadata_path = backup_dir / 'backup_state.json'
+    with workspace_lock(game / Path(BUNDLE_SUBDIR).parent):
+        raw = shared.read_bytes()
+        patched, added = unity_bundle.add_key_aliases(raw, KEY_ALIASES)
+        if not added:
+            return []
+        if not metadata_path.is_file():
+            raise RuntimeError('번역 백업이 없어 공용 키 번들을 고치지 않음')
+        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+        if not metadata.get('files'):
+            raise RuntimeError('번역 백업 정보가 없어 공용 키 번들을 고치지 않음')
+        atomic_write(backup_dir / shared.name, raw)
+        metadata['files'][shared.name] = {'path': str(shared.relative_to(game)), 'sha256': hashlib.sha256(raw).hexdigest()}
+        write_json(metadata_path, metadata)
+        atomic_write(shared, patched)
+        state.data['shared_bundle_hash'] = hashlib.sha256(patched).hexdigest()
+        state.save()
+    return added
 
 
 # ━━━ 6. LELocalePatch CLI ━━━
@@ -764,7 +815,7 @@ def fetch_font_tool(release, progress_cb=None):
     local = find_local_font_tool()
     if local:
         return local
-    releases = [release] + [r for r in github_api_get(GITHUB_API_RELEASES) if r.get("tag_name") != release.get("tag_name")]
+    releases = [release] + [r for r in github_api_get(GITHUB_API_RELEASE_LIST) if r.get("tag_name") != release.get("tag_name")]
     for candidate in releases:
         assets = find_release_assets(candidate)
         if "font_tool" not in assets or "checksums" not in assets:
@@ -956,6 +1007,8 @@ class PatchOrchestrator:
             installed_bundle = find_bundle_path(self.game_path)
             content_matches = (installed_bundle is not None and self.state.data.get("bundle_hash") == sha256_file(installed_bundle))
             if not self.state.is_outdated(tag) and not game_updated and content_matches:
+                # 번역은 그대로여도 새 패처가 고치는 키 이름은 여기서 적용 (원본 백업이 있을 때만)
+                self._fix_keys(check_backup=True)
                 msg = f"이미 최신 패치 적용됨 ({tag})"
                 self._log(f"✅ {msg}")
                 self._status(msg)
@@ -1020,7 +1073,7 @@ class PatchOrchestrator:
                         run_lelocale_patch(lelocale_exe, str(bundle_path), "import", json_source)
                         files = self._list_json_files(json_source)
                         self._log(f"LELocalePatch: {len(files)}개 JSON 적용")
-
+                        self._fix_keys()
 
                 current_buildid = get_steam_buildid(self.game_path)
                 bh = sha256_file(str(bundle_path))
@@ -1038,6 +1091,22 @@ class PatchOrchestrator:
             self._status("❌ 오류 발생")
             log.exception("Patch failed")
         return result
+
+    def _fix_keys(self, check_backup=False):
+        """게임에 빠진 키 이름 추가. 실패해도 번역 적용은 그대로 둠 (그 키만 번호로 나옴)."""
+        try:
+            if check_backup:
+                # 번역을 다시 적용하지 않는 경로: 있는 백업만 확인 (없으면 새로 만들지 않음 — 지금 파일은 원본이 아님)
+                if not (Path(self.game_path) / BACKUP_DIR_NAME).is_dir():
+                    return
+                create_backup(self.game_path)
+            added = apply_key_aliases(self.game_path, self.state)
+        except Exception as e:
+            self._log(f"⚠️ 빠진 키 이름 추가 건너뜀: {e}")
+            log.exception("Key alias patch failed")
+            return
+        if added:
+            self._log(f"✅ 게임에 빠진 키 이름 추가: {', '.join(added)}")
 
     def _find_file(self, root_dir, filename_lower):
         for root, dirs, files in os.walk(root_dir):
@@ -1135,6 +1204,9 @@ def run_gui():
             self.lbl_notes = ttk.Label(notes, text="업데이트 내용", style="Sub.TLabel")
             self.lbl_notes.pack(anchor="w")
             self.notes_text = tk.Text(notes, width=40, bg=self.BG2, fg=self.FG, font=("맑은 고딕", 9), relief="flat", bd=8, wrap="word", state="disabled", cursor="arrow", spacing1=2, spacing3=2)
+            scroll = ttk.Scrollbar(notes, orient="vertical", command=self.notes_text.yview)
+            self.notes_text.configure(yscrollcommand=scroll.set)
+            scroll.pack(side="right", fill="y", pady=(3, 0))
             self.notes_text.pack(fill="both", expand=True, pady=(3, 0))
             self.notes_text.tag_configure("version", foreground=self.ACCENT, font=("맑은 고딕", 11, "bold"), spacing1=10)
             self.notes_text.tag_configure("date", foreground="#888", font=("맑은 고딕", 8))
@@ -1205,7 +1277,7 @@ def run_gui():
             self.btn_restore.pack(side="right", padx=(10, 0), ipady=8)
 
         def _render_notes(self):
-            """오른쪽 칸에 적용된 버전 이후의 릴리즈 노트(주요 작업)를 표시."""
+            """오른쪽 칸에 v1.0.0부터의 릴리즈 노트(주요 작업)를 최신순으로 표시. 적용된 버전 이후 것은 새로 적용될 내용으로 구분."""
             gp = self.game_path.get().strip()
             current = PatchState(gp).patch_version if gp and Path(gp).is_dir() else None
             box = self.notes_text
@@ -1216,12 +1288,19 @@ def run_gui():
                 box.insert("end", "릴리즈 노트를 불러오는 중..." if self._releases is None else "릴리즈 노트를 불러오지 못했습니다.", "muted")
                 box.configure(state="disabled")
                 return
-            entries = changelog_since(self._releases, current)
-            pending = bool(current) and any(parse_version(e["tag"]) > parse_version(current) for e in entries)
-            self.lbl_notes.configure(text=f"새로 적용될 내용 ({current} → {entries[0]['tag']})" if pending else "최신 릴리즈 내용")
-            for entry in entries:
+            entries = release_history(self._releases, current)
+            if not entries:
+                self.lbl_notes.configure(text="업데이트 내용")
+                box.insert("end", "릴리즈 노트가 없습니다.", "muted")
+                box.configure(state="disabled")
+                return
+            pending = entries[0]["new"]
+            self.lbl_notes.configure(text=f"새로 적용될 내용 ({current} → {entries[0]['tag']})" if pending else f"업데이트 내용 ({entries[-1]['tag']}부터)")
+            for i, entry in enumerate(entries):
+                if pending and not entry["new"] and entries[i - 1]["new"]:
+                    box.insert("end", "\n── 이미 적용된 릴리즈 ──\n", "muted")
                 box.insert("end", entry["title"] + "\n", "version")
-                box.insert("end", entry["date"] + "\n", "date")
+                box.insert("end", entry["date"] + ("  ·  새로 적용" if entry["new"] else "") + "\n", "date")
                 for line in entry["lines"]:
                     if not line.strip():
                         continue
@@ -1300,7 +1379,7 @@ def run_gui():
 
             def check():
                 try:
-                    releases = github_api_get(GITHUB_API_RELEASES)
+                    releases = github_api_get(GITHUB_API_RELEASE_LIST)
                 except Exception:
                     releases = []
                 self.root.after(0, show_notes, releases)

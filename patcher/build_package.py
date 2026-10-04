@@ -33,7 +33,7 @@ CERTIFI_SHA256 = "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c9929284837
 CA_BUNDLE = "cacert.pem"
 
 PACKAGE_NAME = "LastEpoch_KR_Patcher"
-APP_FILES = ["patcher.py", "locale_runner.py", "workbench_common.py", "icon.ico"]
+APP_FILES = ["patcher.py", "locale_runner.py", "workbench_common.py", "unity_bundle.py", "icon.ico"]
 
 # 패처가 쓰지 않는 런타임 구성요소
 PRUNE_ROOT = ["Doc", "include", "libs", "Scripts", "__install__.json"]
