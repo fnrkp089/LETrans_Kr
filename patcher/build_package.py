@@ -26,6 +26,12 @@ PYTHON_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON
 PYTHON_SHA256 = "ac1a727a71738e11de80b76e975f9b8a258aea6412bfc31696b929d59c6aafd0"
 PYTHON_TAG = "python" + "".join(PYTHON_VERSION.split(".")[:2])
 
+# 루트 인증서 묶음 (Mozilla 목록, certifi 배포본에서 cacert.pem만 꺼냄)
+CERTIFI_URL = ("https://files.pythonhosted.org/packages/0b/a7/71ac2cff56fec219ed242bb11b8efb69fcc4bec75db06fb7bfe35de520e6/"
+               "certifi-2026.7.22-py3-none-any.whl")
+CERTIFI_SHA256 = "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
+CA_BUNDLE = "cacert.pem"
+
 PACKAGE_NAME = "LastEpoch_KR_Patcher"
 APP_FILES = ["patcher.py", "locale_runner.py", "workbench_common.py", "icon.ico"]
 
@@ -54,7 +60,7 @@ README = """Last Epoch 한국어 번역패치 패처 {version}
 
 구성
   LastEpoch_KR_Patcher.cmd  실행용 배치 파일 (메모장으로 열어볼 수 있음)
-  app\\                      패처 소스 (.py, 메모장으로 열어볼 수 있음)
+  app\\                      패처 소스 (.py, 메모장으로 열어볼 수 있음)와 루트 인증서 목록 (cacert.pem, Mozilla)
   runtime\\                  Python {python} 공식 배포본 (python.org, Python Software Foundation 서명)
 
 직접 만든 실행 파일(exe)은 들어 있지 않습니다.
@@ -77,16 +83,16 @@ def patcher_version():
     return match.group(1)
 
 
-def fetch_python(cache):
+def fetch(cache, url, sha256):
     cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / Path(PYTHON_URL).name
-    if not (archive.is_file() and sha256_file(archive) == PYTHON_SHA256):
-        print(f"다운로드: {PYTHON_URL}")
-        with urllib.request.urlopen(PYTHON_URL, timeout=120) as resp, open(archive, "wb") as f:
+    archive = cache / Path(url).name
+    if not (archive.is_file() and sha256_file(archive) == sha256):
+        print(f"다운로드: {url}")
+        with urllib.request.urlopen(url, timeout=120) as resp, open(archive, "wb") as f:
             shutil.copyfileobj(resp, f)
-        if sha256_file(archive) != PYTHON_SHA256:
+        if sha256_file(archive) != sha256:
             archive.unlink()
-            raise RuntimeError("Python 배포본 해시 불일치")
+            raise RuntimeError(f"해시 불일치: {archive.name}")
     return archive
 
 
@@ -145,10 +151,12 @@ def build(out):
         shutil.rmtree(package)
     package.mkdir(parents=True)
 
-    build_runtime(fetch_python(out / "cache"), package / "runtime")
+    build_runtime(fetch(out / "cache", PYTHON_URL, PYTHON_SHA256), package / "runtime")
     (package / "app").mkdir()
     for name in APP_FILES:
         shutil.copyfile(HERE / name, package / "app" / name)
+    with zipfile.ZipFile(fetch(out / "cache", CERTIFI_URL, CERTIFI_SHA256)) as z:
+        (package / "app" / CA_BUNDLE).write_bytes(z.read(f"certifi/{CA_BUNDLE}"))
     # 패처 자체 업데이트가 읽음: python이 같을 때만 app 폴더만 교체
     (package / "app" / "package.json").write_text(
         json.dumps({"patcher": version, "python": PYTHON_VERSION}, indent=2) + "\n", encoding="utf-8", newline="\n")

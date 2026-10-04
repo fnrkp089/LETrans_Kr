@@ -22,15 +22,35 @@ import urllib.error
 from pathlib import Path
 from datetime import datetime
 
-# SSL 인증서 설정 (certifi가 없으면 Windows 인증서 저장소 사용)
-try:
-    import certifi
-    SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
-except Exception:
+CA_BUNDLE = "cacert.pem"
+
+
+def make_ssl_context():
+    """Windows 인증서 저장소 + 패키지에 넣은 루트 인증서 묶음(cacert.pem).
+
+    Windows는 루트 인증서를 필요할 때 받아 두는데 Python은 그걸 시키지 못해서, 저장소만 쓰면
+    GitHub 루트가 아직 없는 PC에서 CERTIFICATE_VERIFY_FAILED가 남. 저장소도 같이 쓰는 이유:
+    백신·회사 프록시가 HTTPS를 검사하는 PC는 그 인증서가 저장소에만 있음.
+    """
     try:
-        SSL_CONTEXT = ssl.create_default_context()
+        ctx = ssl.create_default_context()
     except Exception:
         raise RuntimeError("TLS 인증서 초기화 실패. 인증서 설정 확인 필요")
+    bundle = Path(__file__).resolve().parent / CA_BUNDLE
+    if not bundle.is_file():
+        try:
+            import certifi
+            bundle = Path(certifi.where())
+        except Exception:
+            return ctx
+    try:
+        ctx.load_verify_locations(cafile=str(bundle))
+    except Exception:
+        pass
+    return ctx
+
+
+SSL_CONTEXT = make_ssl_context()
 
 try:
     import winreg
@@ -47,7 +67,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.8.0"
+PATCHER_VERSION = "0.8.1"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
