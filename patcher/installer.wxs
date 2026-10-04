@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 패처 설치 패키지 (WiX 5)
+     build_package.py가 만든 폴더(서명된 Python 런타임 + 패처 소스)를 그대로 설치하고 바로가기를 만듦.
+     설치 프로그램을 exe가 아니라 msi로 만드는 이유: 서명 없는 설치 exe는 백신의 머신러닝 추정에 걸림.
+
+     wix extension add WixToolset.Util.wixext/5.0.2
+     wix build -ext WixToolset.Util.wixext -d Version=0.8.0 -d SourceDir=dist\LastEpoch_KR_Patcher -o out.msi installer.wxs -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Last Epoch 한국어 패치" Manufacturer="Kemmochi" Version="$(Version)"
+           UpgradeCode="6C0E1B5E-6E0C-4B7F-9D4B-2F1E7A53C0A4" Scope="perUser"
+           Language="1042" Codepage="949" InstallerVersion="500" Compressed="yes">
+    <SummaryInformation Description="Last Epoch 한국어 패치 $(Version)" Manufacturer="Kemmochi" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="더 새로운 버전이 이미 설치되어 있습니다." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="AppIcon" SourceFile="$(SourceDir)\app\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/fnrkp089/LETrans_Kr" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- 사용자 폴더에 설치: 관리자 권한을 묻지 않고, 패처가 app 폴더를 스스로 업데이트할 수 있음 -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="LETransKr" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Last Epoch 한국어 패치">
+      <ComponentGroupRef Id="PackageFiles" />
+      <ComponentRef Id="AppFolderCleanup" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <ComponentGroup Id="PackageFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(SourceDir)\**" />
+    </ComponentGroup>
+
+    <!-- 자체 업데이트로 바뀐 app 폴더까지 제거 때 지움 (제거 시점에는 경로를 레지스트리에서 읽음) -->
+    <Property Id="APPFOLDER">
+      <RegistrySearch Id="AppFolderSearch" Root="HKCU" Key="Software\LETransKr" Name="AppFolder" Type="raw" />
+    </Property>
+    <Component Id="AppFolderCleanup" Directory="INSTALLFOLDER" Guid="3F0C7E52-98A1-4C3D-B6E4-7D21A5C8F033">
+      <RegistryValue Root="HKCU" Key="Software\LETransKr" Name="AppFolder" Type="string" Value="[INSTALLFOLDER]app" KeyPath="yes" />
+      <util:RemoveFolderEx On="uninstall" Property="APPFOLDER" />
+    </Component>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="B2D0B8B4-6B1E-4E55-9F5E-0C1C5E7A9D11">
+        <Shortcut Id="StartMenuLink" Name="Last Epoch 한국어 패치" Target="[INSTALLFOLDER]runtime\pythonw.exe"
+                  Arguments="-B &quot;[INSTALLFOLDER]app\patcher.py&quot;" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\LETransKr" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="E7C3D2A9-41F6-4E0B-8A77-3B9B6D2F5C22">
+        <Shortcut Id="DesktopLink" Name="Last Epoch 한국어 패치" Target="[INSTALLFOLDER]runtime\pythonw.exe"
+                  Arguments="-B &quot;[INSTALLFOLDER]app\patcher.py&quot;" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\LETransKr" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- 더블클릭으로 설치했을 때만 끝나고 패처를 띄움 (무인 설치 /qn 에서는 띄우지 않음) -->
+    <CustomAction Id="LaunchPatcher" Directory="INSTALLFOLDER" Return="asyncNoWait" Impersonate="yes"
+                  ExeCommand="&quot;[INSTALLFOLDER]runtime\pythonw.exe&quot; -B &quot;[INSTALLFOLDER]app\patcher.py&quot;" />
+    <InstallExecuteSequence>
+      <Custom Action="LaunchPatcher" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE AND UILevel &gt; 3" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

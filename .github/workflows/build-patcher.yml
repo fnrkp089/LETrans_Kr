@@ -39,26 +39,34 @@ jobs:
       - name: Smoke test
         run: dist\LastEpoch_KR_Patcher\runtime\python.exe -B -c "import patcher, tkinter, ssl; print(patcher.PATCHER_VERSION)"
 
-      # 패키지 폴더를 그대로 설치하는 설치 프로그램 (Inno Setup)
+      # 패키지 폴더를 그대로 설치하는 설치 패키지 (WiX, msi)
       - name: Build installer
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.Util.wixext/5.0.2
           $version = "${{ steps.build.outputs.name }}" -replace '^.*-v', ''
-          & $iscc "/DAppVersion=$version" "/DSourceDir=$PWD\dist\LastEpoch_KR_Patcher" "/O$PWD\dist" patcher\installer.iss
+          $msi = "$PWD\dist\LastEpoch_KR_Patcher-v$version.msi"
+          wix build -ext WixToolset.Util.wixext -d "Version=$version" -d "SourceDir=$PWD\dist\LastEpoch_KR_Patcher" -o $msi patcher\installer.wxs
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $setup = Get-Item dist\LastEpoch_KR_Patcher-v*-setup.exe
-          python -c "import hashlib, pathlib, sys; p = pathlib.Path(sys.argv[1]); open('dist/SHA256SUMS', 'a', newline='\n').write(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n')" $setup.FullName
+          python -c "import hashlib, pathlib, sys; p = pathlib.Path(sys.argv[1]); open('dist/SHA256SUMS', 'a', newline='\n').write(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n')" $msi
           Get-Content dist\SHA256SUMS
 
+      # 무인 설치 → 실행 확인 → 자체 업데이트를 흉내 낸 파일 추가 → 제거 후 남는 것이 없는지 확인
       - name: Install test
         run: |
-          $setup = Get-Item dist\LastEpoch_KR_Patcher-v*-setup.exe
-          $target = "$env:RUNNER_TEMP\install-test"
-          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$target" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { exit 1 }
+          $msi = (Get-Item dist\LastEpoch_KR_Patcher-v*.msi).FullName
+          $log = "$env:RUNNER_TEMP\install.log"
+          $p = Start-Process msiexec -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 80; exit 1 }
+          $target = "$env:LOCALAPPDATA\Programs\LETransKr"
           & "$target\runtime\python.exe" -B -c "import patcher; assert patcher.package_dir(), 'package_dir'; print(patcher.PATCHER_VERSION, patcher.package_dir())"
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Last Epoch 한국어 패치.lnk'
+          if (-not (Test-Path -LiteralPath $lnk)) { Write-Host '시작 메뉴 바로가기 없음'; exit 1 }
+          Set-Content "$target\app\added_by_update.py" 'x = 1'
+          $p = Start-Process msiexec -ArgumentList '/x', "`"$msi`"", '/qn', '/norestart' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit 1 }
+          if ((Test-Path $target) -or (Test-Path -LiteralPath $lnk)) { Get-ChildItem $target -Recurse | Select-Object FullName; Write-Host '제거 후 남은 파일 있음'; exit 1 }
 
       # 이 파일들이 이 저장소의 이 커밋에서 빌드됐다는 증명 (gh attestation verify로 확인)
       - name: Attest build provenance
@@ -66,15 +74,15 @@ jobs:
         with:
           subject-path: |
             dist/LastEpoch_KR_Patcher-*.zip
-            dist/LastEpoch_KR_Patcher-*-setup.exe
+            dist/LastEpoch_KR_Patcher-*.msi
 
-      # 설치 프로그램, 전체 패키지(압축본), 자체 업데이트용 app zip, SHA256SUMS
+      # 설치 패키지(msi), 전체 패키지(압축본), 자체 업데이트용 app zip, SHA256SUMS
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.build.outputs.name }}
           path: |
-            dist/LastEpoch_KR_Patcher-*-setup.exe
+            dist/LastEpoch_KR_Patcher-*.msi
             dist/LastEpoch_KR_Patcher-*.zip
             dist/SHA256SUMS
           compression-level: 0
