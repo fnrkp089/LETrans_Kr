@@ -133,6 +133,9 @@ class FontTests(unittest.TestCase):
         for bundle in manifest['dynamicFontBundles']:  # relative to Last Epoch_Data, as the tool resolves them
             path = self.resources.parent / bundle
             path.write_bytes(path.read_bytes() + b'+' + marker)
+        if 'extraAssetsFile' in manifest:  # the tool only removes characters there
+            path = self.resources.parent / manifest['extraAssetsFile']
+            path.write_bytes(path.read_bytes() + b'-characters')
         return ['Made dynamic'] * len(patcher.KR_FONT_ASSETS) * (1 + bundles)
 
     def apply(self, mode, ttf=None):
@@ -160,6 +163,35 @@ class FontTests(unittest.TestCase):
         patcher.apply_font(self.game, self.state, {'mode': 'bold', 'all_text': False}, self.tool)
         self.assertNotIn('dynamicFontCharacters', self.packages[1])
         self.assertTrue(patcher.font_is_applied(self.game, self.state, {'mode': 'bold', 'all_text': False}))
+
+    def test_all_text_also_patches_default_font_copy(self):
+        shared = self.game / patcher.FONT_SHARED_RELPATH
+        shared.write_bytes(b'original shared')
+        self.apply('bold')
+        self.assertEqual(self.packages[0]['extraAssetsFile'], 'sharedassets0.assets')
+        self.assertEqual(self.packages[0]['dynamicFontBundles'], ['StreamingAssets/LEAssetBundles/PermaLoad.bundle'])
+        self.assertEqual(shared.read_bytes(), b'original shared-characters')
+        self.assertTrue(patcher.font_is_applied(self.game, self.state, {'mode': 'bold'}))
+        patcher.apply_font(self.game, self.state, {'mode': 'bold', 'all_text': False}, self.tool)
+        self.assertNotIn('extraAssetsFile', self.packages[1])
+        self.assertEqual(shared.read_bytes(), b'original shared')
+        self.assertTrue(patcher.font_is_applied(self.game, self.state, {'mode': 'bold', 'all_text': False}))
+        self.apply('bold')
+        self.assertTrue(patcher.restore_font(self.game))
+        self.assertEqual(shared.read_bytes(), b'original shared')
+        self.assertTrue(patcher.font_is_applied(self.game, patcher.PatchState(self.game), {'mode': 'none'}))
+
+    def test_patch_without_default_font_copy_of_v082_is_upgraded(self):
+        # v0.8.2까지는 sharedassets0.assets를 건드리지 않았고 상태/백업에도 기록하지 않았음
+        self.apply('bold')
+        shared = self.game / patcher.FONT_SHARED_RELPATH
+        shared.write_bytes(b'original shared')
+        self.assertFalse(patcher.font_is_applied(self.game, self.state, {'mode': 'bold'}))
+        self.apply('bold')
+        self.assertEqual(self.resources.read_bytes(), b'original assets+Pretendard-Bold')
+        self.assertEqual(shared.read_bytes(), b'original shared-characters')
+        self.assertTrue(patcher.restore_font(self.game))
+        self.assertEqual(shared.read_bytes(), b'original shared')
 
     def test_restore_returns_original_and_clears_state(self):
         self.assertFalse(patcher.restore_font(self.game))

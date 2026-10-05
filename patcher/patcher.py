@@ -68,7 +68,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.8.2"
+PATCHER_VERSION = "0.8.3"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -99,6 +99,9 @@ KEY_ALIASES = {"Item_Affix_1156_DisplayName": "Item_Affix_1156_LootFilterOverrid
 # UI 대부분이 쓰는 사본이 든 PermaLoad.bundle 두 곳에 있음. 한쪽만 바꾸면 글자마다 폰트가 섞임
 RESOURCES_RELPATH = Path("Last Epoch_Data") / "resources.assets"
 FONT_BUNDLE_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "LEAssetBundles" / "PermaLoad.bundle"
+# TextMeshPro 기본 폰트(Caladea) 사본이 든 파일. 굵게 표시되는 글자(체력·마나 숫자, 단축키 등)는
+# 영문·숫자를 여기서 가져오므로, 여기서도 빼야 한국어 폰트로 넘어감
+FONT_SHARED_RELPATH = Path("Last Epoch_Data") / "sharedassets0.assets"
 FONT_BACKUP_DIR_NAME = "kr_font_backup"
 FONT_TOOL_NAME = "LEFontPatch.exe"
 KR_FONT_ASSETS = ["NotoSerifKR-Regular SDF (Body)", "HahmletKR-Medium SDF (Title)"]
@@ -598,11 +601,8 @@ def normalize_font(font):
 
 
 def _font_files(game):
-    """폰트 에셋이 든 게임 파일들 (게임 폴더 기준 상대 경로). 번들은 게임 버전에 따라 없을 수 있음."""
-    files = [RESOURCES_RELPATH]
-    if (Path(game) / FONT_BUNDLE_RELPATH).is_file():
-        files.append(FONT_BUNDLE_RELPATH)
-    return files
+    """폰트 에셋이 든 게임 파일들 (게임 폴더 기준 상대 경로). resources.assets 외에는 게임 버전에 따라 없을 수 있음."""
+    return [RESOURCES_RELPATH] + [rel for rel in (FONT_SHARED_RELPATH, FONT_BUNDLE_RELPATH) if (Path(game) / rel).is_file()]
 
 
 def _patched_hashes(state):
@@ -757,7 +757,7 @@ def apply_font(game_path, state, font, tool_exe=None):
             else:
                 source = {"fontAsset": "Pretendard-Bold"}  # 게임에 이미 들어 있는 폰트 파일
             # 번들 경로는 도구 기준(Last Epoch_Data 아래)
-            bundles = [rel.relative_to(RESOURCES_RELPATH.parent).as_posix() for rel in files if rel != RESOURCES_RELPATH]
+            bundles = [rel.relative_to(RESOURCES_RELPATH.parent).as_posix() for rel in files if rel == FONT_BUNDLE_RELPATH]
             manifest = {
                 "dynamicFonts": {name: dict(source) for name in KR_FONT_ASSETS},
                 "dynamicFontBundles": bundles,
@@ -765,6 +765,8 @@ def apply_font(game_path, state, font, tool_exe=None):
             }
             if wanted["all_text"]:
                 manifest["dynamicFontCharacters"] = FONT_ALL_CHARACTERS
+                if FONT_SHARED_RELPATH in files:
+                    manifest["extraAssetsFile"] = FONT_SHARED_RELPATH.relative_to(RESOURCES_RELPATH.parent).as_posix()
             write_json(package / "manifest.json", manifest)
             try:
                 replaced = run_font_tool(tool_exe, game, package, len(bundles))

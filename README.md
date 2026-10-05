@@ -52,7 +52,7 @@ gh attestation verify LastEpoch_KR_Patcher-v<버전>.zip -R fnrkp089/LETrans_Kr
 - 임시 bundle/catalog에 `LELocalePatch`로 적용하고 재추출한 번역값을 비교한 뒤 실제 파일 교체.
 - 같은 게임 빌드의 첫 백업 보존. 백업 해시·파일 쌍 확인, 다른 빌드 복원 거부.
 - 같은 버전이라도 현재 번들 해시가 달라지면 재적용.
-- 한국어 폰트 변경(선택): `LEFontPatch`로 `resources.assets`와 `PermaLoad.bundle`을 원본에서 다시 패치. 원본은 게임 폴더 `kr_font_backup\`에 백업.
+- 한국어 폰트 변경(선택): `LEFontPatch`로 `resources.assets`, `PermaLoad.bundle`, `sharedassets0.assets`를 원본에서 다시 패치. 원본은 게임 폴더 `kr_font_backup\`에 백업.
 - 검증 가능한 델타 기준 정보가 없으므로 전체 ZIP 사용.
 
 체크섬은 다운로드 무결성을 확인하며 배포자 서명을 대신하지 않음.
