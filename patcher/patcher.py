@@ -17,6 +17,7 @@ import logging
 import tempfile
 import subprocess
 import threading
+import time
 import ssl
 import urllib.request
 import urllib.error
@@ -68,7 +69,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.8.3"
+PATCHER_VERSION = "0.8.4"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -987,7 +988,7 @@ def apply_delta_patch(original, delta, output):
 # ━━━ 8. 메인 오케스트레이터 ━━━
 
 class PatchOrchestrator:
-    def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None, font=None):
+    def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None, font=None, working_cb=None):
         self.game_path = game_path
         self.font = font  # None: 폰트는 건드리지 않음 / {'mode': ..., 'ttf': ...}
         self._release = None
@@ -995,6 +996,8 @@ class PatchOrchestrator:
         self._log = log_cb or (lambda msg: log.info(msg))
         self._status = status_cb or (lambda msg: None)
         self._progress = progress_cb or (lambda val, total: None)
+        # 진행률을 알 수 없는 단계(압축 해제, 번들 패치, 폰트 적용)에 들어갈 때 호출
+        self._working = working_cb or (lambda: None)
 
     def _dl_progress(self, downloaded, total):
         self._progress(downloaded, total)
@@ -1034,6 +1037,7 @@ class PatchOrchestrator:
             self._status("폰트 도구 준비 중...")
             tool = fetch_font_tool(self._release, self._dl_progress)
             self._log(f"LEFontPatch: {tool}")
+        self._working()
         self._status("폰트 적용 중... (1~2분 걸릴 수 있습니다)")
         apply_font(self.game_path, self.state, wanted, tool)
         result["message"] += f"\n폰트: {label}"
@@ -1096,6 +1100,7 @@ class PatchOrchestrator:
                             raise RuntimeError("체크섬 불일치! 다시 시도해주세요.")
                         self._log("✅ SHA256 검증 통과")
 
+                    self._working()
                     self._status("압축 해제 중...")
                     extract_dir = os.path.join(tmpdir, "extracted")
                     os.makedirs(extract_dir)
@@ -1241,6 +1246,7 @@ def run_gui():
             s.configure("Status.TLabel", background=self.BG, foreground="#aaa", font=("맑은 고딕", 9))
             s.configure("Info.TLabel", background=self.BG2, foreground=self.FG, font=("맑은 고딕", 9))
             s.configure("Warn.TLabel", background=self.BG2, foreground=self.WARN, font=("맑은 고딕", 9))
+            s.configure("Busy.TLabel", background=self.BG, foreground=self.WARN, font=("맑은 고딕", 11, "bold"))
             s.configure("TProgressbar", troughcolor=self.ENTRY_BG, background=self.ACCENT, thickness=20)
 
             # 왼쪽: 패치 조작 / 오른쪽: 릴리즈 노트
@@ -1313,6 +1319,9 @@ def run_gui():
             self.progress = ttk.Progressbar(fp2, mode="determinate", style="TProgressbar")
             self.progress.pack(fill="x")
             ttk.Label(fp2, textvariable=self.status_text, style="Status.TLabel").pack(anchor="w", pady=(3, 0))
+            # 적용 중에만 글자가 채워짐 (진행바가 다 찬 걸 보고 끝난 줄 알고 닫는 일 방지)
+            self.lbl_busy = ttk.Label(fp2, text="", style="Busy.TLabel")
+            self.lbl_busy.pack(anchor="w", pady=(3, 0))
 
             fl = tk.Frame(left, bg=self.BG)
             fl.pack(fill="both", expand=True, padx=24, pady=(5, 10))
@@ -1386,8 +1395,28 @@ def run_gui():
 
         def _prog(self, cur, tot):
             if tot > 0:
+                self._stop_working()
                 self.progress["value"] = cur / tot * 100
             self.root.update_idletasks()
+
+        def _work(self):
+            """진행률을 알 수 없는 단계: 진행바를 채우지 않고 좌우로 움직여서 작업 중임을 표시."""
+            if str(self.progress["mode"]) != "indeterminate":
+                self.progress.configure(mode="indeterminate", value=0)
+                self.progress.start(12)
+
+        def _stop_working(self):
+            if str(self.progress["mode"]) == "indeterminate":
+                self.progress.stop()
+                self.progress.configure(mode="determinate", value=0)
+
+        def _tick_busy(self, since):
+            if not self._busy:
+                self.lbl_busy.configure(text="")
+                return
+            sec = int(time.monotonic() - since)
+            self.lbl_busy.configure(text=f"⏳ 작업 중 — 완료 창이 뜰 때까지 닫지 마세요 (경과 {sec // 60}:{sec % 60:02d})")
+            self.root.after(1000, self._tick_busy, since)
 
         def _auto_detect(self):
             self._log("Steam 경로 자동 감지 중...")
@@ -1522,18 +1551,27 @@ def run_gui():
             self.btn_restore.configure(state="disabled")
             self.progress["value"] = 0
             self._busy = True
+            self.btn_apply.configure(text="⏳ 적용 중...")
+            self._work()
+            self._tick_busy(time.monotonic())
             threading.Thread(target=self._run_patch, args=(gp, self.do_force.get(), font), daemon=True).start()
 
         def _run_patch(self, gp, force=False, font=None):
-            orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t), font=font)
+            orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t), font=font, working_cb=lambda: self.root.after(0, self._work))
             if force:
                 orch.state.data.pop("patch_version", None)
             res = orch.run()
             def done():
                 self._busy = False
-                self.btn_apply.configure(state="normal")
+                self._stop_working()
+                self.lbl_busy.configure(text="")
+                self.btn_apply.configure(state="normal", text="🚀 패치 적용")
                 self.btn_restore.configure(state="normal")
                 self._refresh_info(gp)
+                # 다른 창을 보고 있어도 끝난 걸 알 수 있게
+                self.root.deiconify()
+                self.root.lift()
+                self.root.bell()
                 if res["success"]:
                     self.progress["value"] = 100
                     messagebox.showinfo("완료", res["message"])
