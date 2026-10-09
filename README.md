@@ -21,6 +21,8 @@ py patcher/patcher.py --path "D:\Steam\steamapps\common\Last Epoch"
 py patcher/patcher.py --status
 py patcher/patcher.py --force
 py patcher/patcher.py --restore
+py patcher/patcher.py --restore font          # translation | font | all
+py patcher/patcher.py --font bold --font-only # 번역은 그대로 두고 폰트만
 ```
 
 ## 패처에 exe가 없는 이유
@@ -33,6 +35,7 @@ py patcher/patcher.py --restore
 |---|---|
 | `LastEpoch_KR_Patcher.cmd` | 실행용 배치 파일. 메모장으로 열어볼 수 있음 |
 | `app\*.py` | 이 저장소 `patcher/`의 소스 그대로. 메모장으로 열어볼 수 있음 |
+| `app\Maplestory Bold.ttf` | 패처 창 글꼴(메이플스토리 서체, 수정하지 않은 배포본). PC에 설치하지 않고 패처 창에서만 사용 |
 | `runtime\` | [python.org](https://www.python.org/downloads/windows/) 공식 배포본. exe/dll/pyd 전부 Python Software Foundation·Microsoft 서명본 |
 
 `runtime\`의 파일은 우클릭 → 속성 → 디지털 서명에서 서명을 확인할 수 있음.
@@ -53,6 +56,8 @@ gh attestation verify LastEpoch_KR_Patcher-v<버전>.zip -R fnrkp089/LETrans_Kr
 - 같은 게임 빌드의 첫 백업 보존. 백업 해시·파일 쌍 확인, 다른 빌드 복원 거부.
 - 같은 버전이라도 현재 번들 해시가 달라지면 재적용.
 - 한국어 폰트 변경(선택): `LEFontPatch`로 `resources.assets`, `PermaLoad.bundle`, `sharedassets0.assets`를 원본에서 다시 패치. 원본은 게임 폴더 `kr_font_backup\`에 백업.
+- 번역과 폰트는 따로 적용·복원 가능. `번역 패치 적용`을 끄면 게임에 있는 번역은 그대로 두고 폰트만 바꾸며, 이 선택은 게임 폴더의 상태 파일에 기억함.
+- Windows 화면 배율을 따르고 창을 화면(작업 표시줄 제외) 안에 맞춤. 높이가 모자란 화면에서는 여백을 줄이고 로그 칸을 옮긴 좁은 배치 사용.
 - 검증 가능한 델타 기준 정보가 없으므로 전체 ZIP 사용.
 
 체크섬은 다운로드 무결성을 확인하며 배포자 서명을 대신하지 않음.
@@ -99,5 +104,6 @@ py -m unittest discover -s tests -v
 
 - [LELocalePatch](https://github.com/aianlinb/LELocalePatch): Unity 번들 추출/적용 도구.
 - [LEFontPatch](https://github.com/fnrkp089/LEFontPatch): 폰트 교체 도구(원작 [aianlinb/LEFontPatch](https://github.com/aianlinb/LEFontPatch)의 포크).
+- 패처 창 글꼴: [메이플스토리 서체](https://maplestory.nexon.com/media/font)(㈜넥슨코리아). 이 패처의 창에는 메이플스토리가 제공한 메이플스토리 서체가 적용되어 있음. 저작권 안내는 `patcher/Maplestory-LICENSE.txt`.
 - Python: [PSF License](https://docs.python.org/3/license.html). 패키지의 `runtime\LICENSE.txt` 참고.
 - 이 저장소의 라이선스: MIT.

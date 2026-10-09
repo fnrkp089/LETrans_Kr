@@ -33,7 +33,8 @@ CERTIFI_SHA256 = "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c9929284837
 CA_BUNDLE = "cacert.pem"
 
 PACKAGE_NAME = "LastEpoch_KR_Patcher"
-APP_FILES = ["patcher.py", "locale_runner.py", "workbench_common.py", "unity_bundle.py", "icon.ico"]
+APP_FILES = ["patcher.py", "locale_runner.py", "workbench_common.py", "unity_bundle.py", "icon.ico",
+             "Maplestory Bold.ttf", "Maplestory-LICENSE.txt"]
 
 # 패처가 쓰지 않는 런타임 구성요소
 PRUNE_ROOT = ["Doc", "include", "libs", "Scripts", "__install__.json"]
@@ -60,7 +61,8 @@ README = """Last Epoch 한국어 번역패치 패처 {version}
 
 구성
   LastEpoch_KR_Patcher.cmd  실행용 배치 파일 (메모장으로 열어볼 수 있음)
-  app\\                      패처 소스 (.py, 메모장으로 열어볼 수 있음)와 루트 인증서 목록 (cacert.pem, Mozilla)
+  app\\                      패처 소스 (.py, 메모장으로 열어볼 수 있음)와 루트 인증서 목록 (cacert.pem, Mozilla),
+                            패처 창 글꼴 (메이플스토리 서체, 저작권 안내는 Maplestory-LICENSE.txt)
   runtime\\                  Python {python} 공식 배포본 (python.org, Python Software Foundation 서명)
 
 직접 만든 실행 파일(exe)은 들어 있지 않습니다.

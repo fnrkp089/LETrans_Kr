@@ -69,7 +69,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.8.4"
+PATCHER_VERSION = "0.8.5"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -82,6 +82,13 @@ USER_AGENT = f"LastEpoch-KR-Patcher/{PATCHER_VERSION}"
 PATCHER_TAG_PREFIX = "patcher-v"
 PACKAGE_INFO = "package.json"
 APP_ICON = "icon.ico"
+# 패처 창 글꼴: 메이플스토리 서체 Bold (㈜넥슨코리아, 저작권 안내는 Maplestory-LICENSE.txt). 못 쓰면 맑은 고딕
+UI_FONT_FILE = "Maplestory Bold.ttf"
+UI_FONT_FAMILY = "메이플스토리"
+UI_FONT_FALLBACK = "맑은 고딕"
+# 배율 100% 기준 창 크기와, 이보다 낮으면 좁은 화면용 배치로 바꾸는 높이
+WINDOW_SIZE = (1140, 840)
+COMPACT_BELOW = 760
 
 BUNDLE_SUBDIR = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "StandaloneWindows64"
 BUNDLE_FILENAME = "localization-string-tables-korean(ko)_assets_all.bundle"
@@ -89,6 +96,9 @@ CATALOG_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "catalog.
 
 PATCH_STATE_FILE = "kr_patch_state.json"
 BACKUP_DIR_NAME = "kr_patch_backup"
+# 상태 파일에서 번역 패치가 쓰는 항목. 그 밖(폰트 기록 "font", 번역 사용 여부 "translate")은 번역을 복원해도 남김
+TRANSLATION_STATE_KEYS = ("patch_version", "patch_date", "game_buildid", "bundle_hash", "patcher_version", "files_applied", "shared_bundle_hash")
+RESTORE_PARTS = {"all": "번역과 폰트 모두", "translation": "번역만", "font": "폰트만"}
 
 # 모든 언어가 같이 쓰는 키 이름표. 게임이 찾는 이름이 여기 없으면 번역이 있어도 키 번호가 그대로 나옴
 SHARED_BUNDLE_FILENAME = "localization-assets-shared_assets_all.bundle"
@@ -332,6 +342,11 @@ class PatchState:
     def game_buildid(self):
         return self.data.get("game_buildid")
 
+    @property
+    def translate(self):
+        """번역 패치를 쓰는지. False면 게임 공식 번역을 그대로 두고 폰트만 바꾸는 사용자."""
+        return bool(self.data.get("translate", True))
+
     def is_outdated(self, new_version):
         current = self.patch_version
         if not current:
@@ -484,7 +499,14 @@ def restore_backup(game_path):
             for target, content in before.items():
                 atomic_write(target, content)
             raise
-        (game / PATCH_STATE_FILE).unlink(missing_ok=True)
+        # 번역 기록만 지움: 폰트 기록까지 지우면 적용된 폰트를 패처가 모르게 됨
+        state = PatchState(game_path)
+        for key in TRANSLATION_STATE_KEYS:
+            state.data.pop(key, None)
+        if state.data:
+            state.save()
+        else:
+            (game / PATCH_STATE_FILE).unlink(missing_ok=True)
     return True
 
 
@@ -840,10 +862,28 @@ def clear_stale_locks(game_path):
 
 
 def restore_all(game_path):
-    """폰트 → 번역 순서로 복원 (번역 복원이 상태 파일을 지우므로). 하나라도 복원했으면 True."""
+    """폰트 → 번역 순서로 복원. 하나라도 복원했으면 True."""
     clear_stale_locks(game_path)
     font = restore_font(game_path)
     return restore_backup(game_path) or font
+
+
+def restore_part(game_path, what="all"):
+    """RESTORE_PARTS 중 고른 것만 원본으로 되돌림. 되돌린 것이 있으면 True."""
+    if what not in RESTORE_PARTS:
+        raise ValueError(f"알 수 없는 복원 대상: {what}")
+    if what == "all":
+        return restore_all(game_path)
+    clear_stale_locks(game_path)
+    if what == "font":
+        return restore_font(game_path)
+    restored = restore_backup(game_path)
+    if restored:
+        # 번역만 되돌린 사람은 폰트만 쓰려는 것: 다음 적용 때 번역이 다시 깔리지 않게 기억
+        state = PatchState(game_path)
+        state.data["translate"] = False
+        state.save()
+    return restored
 
 
 def find_local_font_tool():
@@ -988,9 +1028,10 @@ def apply_delta_patch(original, delta, output):
 # ━━━ 8. 메인 오케스트레이터 ━━━
 
 class PatchOrchestrator:
-    def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None, font=None, working_cb=None):
+    def __init__(self, game_path, log_cb=None, status_cb=None, progress_cb=None, font=None, working_cb=None, translate=True):
         self.game_path = game_path
         self.font = font  # None: 폰트는 건드리지 않음 / {'mode': ..., 'ttf': ...}
+        self.translate = translate  # False: 번역은 건드리지 않음 (게임에 있는 번역 그대로)
         self._release = None
         self.state = PatchState(game_path)
         self._log = log_cb or (lambda msg: log.info(msg))
@@ -1015,27 +1056,47 @@ class PatchOrchestrator:
     def run(self):
         for lock in clear_stale_locks(self.game_path):
             self._log(f"이전 실행이 남긴 잠금 정리: {lock}")
-        result = self._run_translation()
+        if self.translate:
+            result = self._run_translation()
+        else:
+            result = {"success": True, "version": self.state.patch_version or "", "files": [], "message": "번역은 건드리지 않았습니다."}
+            self._log("번역 패치: 건너뜀")
         if result["success"] and self.font is not None:
             try:
                 self._run_font(result)
             except Exception as e:
-                result.update(success=False, message=f"번역 패치는 적용됨. 폰트 적용 실패: {e}")
+                result.update(success=False, message=("번역 패치는 적용됨. " if self.translate else "") + f"폰트 적용 실패: {e}")
                 self._log(f"❌ 폰트 오류: {e}")
                 self._status("❌ 폰트 적용 실패")
                 log.exception("Font patch failed")
+        if result["success"]:
+            self._remember_translate()
         return result
+
+    def _remember_translate(self):
+        """번역을 쓰는지 기억해 다음 실행의 체크 상태와 새 번역 알림에 씀."""
+        if self.state.translate == self.translate:
+            return
+        self.state.data["translate"] = self.translate
+        try:
+            self.state.save()
+        except OSError as e:
+            self._log(f"⚠️ 설정 저장 실패: {e}")
 
     def _run_font(self, result):
         wanted = normalize_font(self.font)
         label = FONT_MODES[wanted["mode"]]
         if font_is_applied(self.game_path, self.state, wanted):
             self._log(f"폰트: {label} (변경 없음)")
+            if not self.translate:
+                result["message"] += f"\n폰트: {label} (변경 없음)"
+                self._status(f"폰트: {label} (변경 없음)")
             return
         tool = None
         if wanted["mode"] != "none":
             self._status("폰트 도구 준비 중...")
-            tool = fetch_font_tool(self._release, self._dl_progress)
+            # 번역을 건너뛰면 릴리즈를 아직 안 받았음 (옆에 둔 도구가 있으면 받을 필요 없음)
+            tool = find_local_font_tool() or fetch_font_tool(self._release or fetch_latest_release(), self._dl_progress)
             self._log(f"LEFontPatch: {tool}")
         self._working()
         self._status("폰트 적용 중... (1~2분 걸릴 수 있습니다)")
@@ -1205,21 +1266,100 @@ class PatchOrchestrator:
 
 # ━━━ 9. GUI ━━━
 
+def enable_dpi_awareness():
+    """Windows 화면 배율을 패처가 직접 따르게 함.
+
+    안 하면 Windows가 창을 그림처럼 늘려서 글씨가 흐려지고, 화면 크기도 배율만큼 작게 알려줌
+    (1920x1200에 200%면 960x600). 그 화면보다 큰 창은 아래쪽 버튼이 화면 밖으로 나감.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # 시스템 배율 (Tk 8.6은 모니터별 배율 변경을 처리하지 않음)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
+def load_ui_font():
+    """패키지에 넣은 창 글꼴을 이 프로세스에서만 쓰게 등록 (PC에 설치하지 않음). 성공하면 True.
+
+    app 폴더의 파일을 바로 등록하면 Windows가 그 파일을 잡고 있어서 패처 자체 업데이트가 app 폴더를 바꾸지 못함.
+    그래서 사본을 따로 두고 그쪽을 등록.
+    """
+    source = Path(__file__).resolve().parent / UI_FONT_FILE
+    base = os.environ.get("LOCALAPPDATA")
+    if sys.platform != "win32" or not base or not source.is_file():
+        return False
+    import ctypes
+    try:
+        target = Path(base) / "LETransKr" / "ui" / UI_FONT_FILE
+        if not (target.is_file() and sha256_file(target) == sha256_file(source)):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        return bool(ctypes.windll.gdi32.AddFontResourceExW(str(target), 0x10, 0))  # FR_PRIVATE
+    except OSError:
+        return False
+
+
+def ui_scale(root):
+    """화면 배율 (100% = 1.0)."""
+    return max(1.0, root.winfo_fpixels("1i") / 96)
+
+
+def screen_work_area(root):
+    """창을 둘 수 있는 화면 영역 (왼쪽, 위, 너비, 높이). 작업 표시줄 제외."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rect), 0):  # SPI_GETWORKAREA
+                return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except (AttributeError, OSError):
+            pass
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+
+def window_frame(scale):
+    """제목 표시줄과 테두리가 차지하는 (너비, 높이) 어림값."""
+    return int(16 * scale), int(40 * scale)
+
+
+def fit_window(area_w, area_h, scale):
+    """화면 영역 안에 다 들어오는 창 (너비, 높이, 좁은 화면용 배치 여부)."""
+    frame_w, frame_h = window_frame(scale)
+    width = min(int(WINDOW_SIZE[0] * scale), area_w - frame_w)
+    height = min(int(WINDOW_SIZE[1] * scale), area_h - frame_h)
+    return width, height, height < int(COMPACT_BELOW * scale)
+
+
 def run_gui():
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
+    from tkinter import font as tkfont
 
     class PatcherApp:
         BG, BG2, FG, ACCENT, WARN, ENTRY_BG = "#0f0f1a", "#161628", "#e0e0e0", "#ff4d6a", "#ffa726", "#1c1c3a"
 
-        def __init__(self, root):
+        def __init__(self, root, font_family=UI_FONT_FALLBACK):
             self.root = root
+            self.font_family = font_family
+            self.scale = ui_scale(root)
             self.root.title(f"Last Epoch 한국어 번역패치 v{PATCHER_VERSION}")
-            self.root.geometry("980x700")
+            # 화면(작업 표시줄 제외) 안에 다 들어오는 크기로 열고 가운데에 둠
+            left, top, area_w, area_h = screen_work_area(root)
+            width, height, self.compact = fit_window(area_w, area_h, self.scale)
+            frame_w, frame_h = window_frame(self.scale)
+            self.root.geometry(f"{width}x{height}+{left + max(0, (area_w - width - frame_w) // 2)}+{top + max(0, (area_h - height - frame_h) // 2)}")
             self.root.resizable(True, True)
-            self.root.minsize(820, 520)
+            self.root.minsize(min(width, self.px(760)), min(height, self.px(440)))
             self.root.configure(bg=self.BG)
             self.game_path = tk.StringVar()
+            self.do_translate = tk.BooleanVar(value=True)
             self.font_mode = tk.StringVar(value="none")
             self.font_file = tk.StringVar()
             self.font_all_text = tk.BooleanVar(value=True)
@@ -1227,9 +1367,19 @@ def run_gui():
             self._busy = False
             self._releases = None  # None: 아직 못 받음 / []: 받기 실패
             self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-            self._build_ui()
+            self._build_ui(width)
             self._auto_detect()
             self._check_new_patch_bg()
+
+        def px(self, value):
+            """배율 100% 기준 픽셀 값을 지금 화면 배율에 맞춤 (글꼴은 pt라서 Tk가 알아서 키움)."""
+            return int(round(value * self.scale))
+
+        def f(self, size, bold=False):
+            # 창 글꼴은 굵은 서체 하나만 넣었으므로 항상 bold로 요청 (가는 서체가 따로 설치된 PC에서 섞이지 않게)
+            # 좁은 화면 배치에서는 한 단계 작게 (적용 버튼까지 한 화면에 들어오게)
+            size += 1 if self.compact else 2
+            return (self.font_family, size, "bold" if bold or self.font_family == UI_FONT_FAMILY else "normal")
 
         def _on_close(self):
             # 적용 도중 닫으면 게임 파일이 반쯤 바뀐 채 남고 잠금 파일도 지워지지 않음
@@ -1238,107 +1388,128 @@ def run_gui():
                 return
             self.root.destroy()
 
-        def _build_ui(self):
+        def _build_ui(self, width):
+            px, f, compact = self.px, self.f, self.compact
+            # 좁은 화면(compact): 위아래 여백을 줄이고 로그를 오른쪽 칸으로 옮겨 적용 버튼까지 다 보이게
+            side, gap, edge = px(24), px(4 if compact else 10), px(8 if compact else 20)
             s = ttk.Style()
             s.theme_use("clam")
-            s.configure("Title.TLabel", background=self.BG, foreground=self.ACCENT, font=("맑은 고딕", 16, "bold"))
-            s.configure("Sub.TLabel", background=self.BG, foreground="#888", font=("맑은 고딕", 9))
-            s.configure("Status.TLabel", background=self.BG, foreground="#aaa", font=("맑은 고딕", 9))
-            s.configure("Info.TLabel", background=self.BG2, foreground=self.FG, font=("맑은 고딕", 9))
-            s.configure("Warn.TLabel", background=self.BG2, foreground=self.WARN, font=("맑은 고딕", 9))
-            s.configure("Busy.TLabel", background=self.BG, foreground=self.WARN, font=("맑은 고딕", 11, "bold"))
-            s.configure("TProgressbar", troughcolor=self.ENTRY_BG, background=self.ACCENT, thickness=20)
+            s.configure("Title.TLabel", background=self.BG, foreground=self.ACCENT, font=f(14 if compact else 18, bold=True))
+            s.configure("Sub.TLabel", background=self.BG, foreground="#888", font=f(10))
+            s.configure("Status.TLabel", background=self.BG, foreground="#aaa", font=f(10))
+            s.configure("Info.TLabel", background=self.BG2, foreground=self.FG, font=f(10))
+            s.configure("Warn.TLabel", background=self.BG2, foreground=self.WARN, font=f(10))
+            s.configure("Busy.TLabel", background=self.BG, foreground=self.WARN, font=f(11 if compact else 12, bold=True))
+            s.configure("TButton", font=f(10))
+            s.configure("TProgressbar", troughcolor=self.ENTRY_BG, background=self.ACCENT, thickness=px(12 if compact else 20))
+            s.configure("Vertical.TScrollbar", arrowsize=px(12), width=px(12))
+            option = dict(bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=f(10))
 
             # 왼쪽: 패치 조작 / 오른쪽: 릴리즈 노트
             notes = tk.Frame(self.root, bg=self.BG)
-            notes.pack(side="right", fill="both", expand=True, padx=(0, 24), pady=(20, 20))
+            notes.pack(side="right", fill="both", expand=True, padx=(0, side), pady=(edge, edge))
             self.lbl_notes = ttk.Label(notes, text="업데이트 내용", style="Sub.TLabel")
             self.lbl_notes.pack(anchor="w")
             # 위: 릴리즈 목록 / 아래: 고른 릴리즈의 내용
             self._notes = []
-            self.notes_list = tk.Listbox(notes, height=5, bg=self.ENTRY_BG, fg=self.FG, font=("맑은 고딕", 9), relief="flat", bd=4, highlightthickness=0, activestyle="none", exportselection=False, selectbackground=self.ACCENT, selectforeground="#ffffff")
-            self.notes_list.pack(fill="x", pady=(3, 6))
+            self.notes_list = tk.Listbox(notes, height=3 if compact else 5, bg=self.ENTRY_BG, fg=self.FG, font=f(10), relief="flat", bd=4, highlightthickness=0, activestyle="none", exportselection=False, selectbackground=self.ACCENT, selectforeground="#ffffff")
+            self.notes_list.pack(fill="x", pady=(px(3), px(6)))
             self.notes_list.bind("<<ListboxSelect>>", lambda _: self._show_release())
-            self.notes_text = tk.Text(notes, width=40, bg=self.BG2, fg=self.FG, font=("맑은 고딕", 9), relief="flat", bd=8, wrap="word", state="disabled", cursor="arrow", spacing1=2, spacing3=2)
+            if compact:
+                self.log_text = tk.Text(notes, height=4, width=10, bg=self.ENTRY_BG, fg="#7a7a9a", font=f(9), relief="flat", bd=5, state="disabled")
+                self.log_text.pack(side="bottom", fill="x", pady=(px(6), 0))
+            self.notes_text = tk.Text(notes, width=10, bg=self.BG2, fg=self.FG, font=f(10), relief="flat", bd=8, wrap="word", state="disabled", cursor="arrow", spacing1=2, spacing3=2)
             scroll = ttk.Scrollbar(notes, orient="vertical", command=self.notes_text.yview)
             self.notes_text.configure(yscrollcommand=scroll.set)
-            scroll.pack(side="right", fill="y", pady=(3, 0))
-            self.notes_text.pack(fill="both", expand=True, pady=(3, 0))
-            self.notes_text.tag_configure("version", foreground=self.ACCENT, font=("맑은 고딕", 11, "bold"))
-            self.notes_text.tag_configure("date", foreground="#888", font=("맑은 고딕", 8))
-            self.notes_text.tag_configure("bold", font=("맑은 고딕", 9, "bold"), foreground="#ffffff")
-            self.notes_text.tag_configure("item", lmargin1=6, lmargin2=18)
-            self.notes_text.tag_configure("subitem", lmargin1=22, lmargin2=34, foreground="#b0b0c0")
+            scroll.pack(side="right", fill="y", pady=(px(3), 0))
+            self.notes_text.pack(fill="both", expand=True, pady=(px(3), 0))
+            self.notes_text.tag_configure("version", foreground=self.ACCENT, font=f(12, bold=True))
+            self.notes_text.tag_configure("date", foreground="#888", font=f(9))
+            self.notes_text.tag_configure("bold", font=f(10, bold=True), foreground="#ffffff")
+            self.notes_text.tag_configure("item", lmargin1=px(6), lmargin2=px(18))
+            self.notes_text.tag_configure("subitem", lmargin1=px(22), lmargin2=px(34), foreground="#b0b0c0")
             self.notes_text.tag_configure("muted", foreground="#888")
             self._render_notes()
 
-            left = tk.Frame(self.root, bg=self.BG, width=600)
+            left = tk.Frame(self.root, bg=self.BG, width=min(px(680), int(width * 0.62)))
             left.pack(side="left", fill="both")
             left.pack_propagate(False)
 
             top = tk.Frame(left, bg=self.BG)
-            top.pack(fill="x", padx=24, pady=(20, 5))
-            ttk.Label(top, text="⚔  Last Epoch 한국어 번역패치", style="Title.TLabel").pack(anchor="w")
-            ttk.Label(top, text=f"github.com/{GITHUB_REPO}  ·  v{PATCHER_VERSION}", style="Sub.TLabel").pack(anchor="w")
+            top.pack(fill="x", padx=side, pady=(edge, px(5)))
+            title = ttk.Label(top, text="⚔  Last Epoch 한국어 번역패치", style="Title.TLabel")
+            about = ttk.Label(top, text=f"v{PATCHER_VERSION}" if compact else f"github.com/{GITHUB_REPO}  ·  v{PATCHER_VERSION}", style="Sub.TLabel")
+            if compact:
+                title.pack(side="left")
+                about.pack(side="left", padx=(px(10), 0), anchor="s")
+            else:
+                title.pack(anchor="w")
+                about.pack(anchor="w")
 
             fp = tk.Frame(left, bg=self.BG)
-            fp.pack(fill="x", padx=24, pady=(15, 5))
-            ttk.Label(fp, text="게임 경로", style="Sub.TLabel").pack(anchor="w")
+            fp.pack(fill="x", padx=side, pady=(gap, px(5)))
+            if not compact:
+                ttk.Label(fp, text="게임 경로", style="Sub.TLabel").pack(anchor="w")
             fe = tk.Frame(fp, bg=self.BG)
-            fe.pack(fill="x", pady=(3, 0))
-            self.entry_path = tk.Entry(fe, textvariable=self.game_path, font=("Consolas", 10), bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG, relief="flat", bd=5)
+            fe.pack(fill="x", pady=(px(3), 0))
+            self.entry_path = tk.Entry(fe, textvariable=self.game_path, font=f(10), bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG, relief="flat", bd=5)
             self.entry_path.pack(side="left", fill="x", expand=True)
-            ttk.Button(fe, text="찾기", command=self._browse).pack(side="right", padx=(5, 0))
+            ttk.Button(fe, text="게임 폴더 찾기" if compact else "찾기", command=self._browse).pack(side="right", padx=(px(5), 0))
 
             fi = tk.Frame(left, bg=self.BG2, bd=1, relief="solid")
-            fi.pack(fill="x", padx=24, pady=(10, 5))
+            fi.pack(fill="x", padx=side, pady=(gap, px(5)))
+            inner = px(2 if compact else 6)
             self.lbl_patch = ttk.Label(fi, text="  📦 패치 상태: 확인 중...", style="Info.TLabel")
-            self.lbl_patch.pack(anchor="w", padx=8, pady=6)
+            self.lbl_patch.pack(anchor="w", padx=px(8), pady=inner)
             self.lbl_game = ttk.Label(fi, text="", style="Info.TLabel")
-            self.lbl_game.pack(anchor="w", padx=8, pady=(0, 6))
+            self.lbl_game.pack(anchor="w", padx=px(8), pady=(0, inner))
 
             fo = tk.Frame(left, bg=self.BG)
-            fo.pack(fill="x", padx=24, pady=(10, 5))
+            fo.pack(fill="x", padx=side, pady=(gap, 0 if compact else px(5)))
             self.do_force = tk.BooleanVar(value=False)
-            for text, var in [("강제 재적용 (같은 버전이어도)", self.do_force)]:
-                tk.Checkbutton(fo, text=text, variable=var, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w")
+            for text, var, command in [("번역 패치 적용 (끄면 게임 번역은 그대로 두고 폰트만 바꿈)", self.do_translate, self._render_notes),
+                                       ("번역 강제 재적용 (같은 버전이어도)", self.do_force, None)]:
+                tk.Checkbutton(fo, text=text, variable=var, command=command, pady=0, **option).pack(anchor="w")
 
             ff = tk.Frame(left, bg=self.BG)
-            ff.pack(fill="x", padx=24, pady=(10, 0))
+            ff.pack(fill="x", padx=side, pady=(gap, 0))
             ttk.Label(ff, text="한국어 폰트", style="Sub.TLabel").pack(anchor="w")
             for mode, text in FONT_MODES.items():
-                tk.Radiobutton(ff, text=text, variable=self.font_mode, value=mode, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w")
+                tk.Radiobutton(ff, text=text, variable=self.font_mode, value=mode, pady=0, **option).pack(anchor="w")
             ffe = tk.Frame(ff, bg=self.BG)
-            ffe.pack(fill="x", padx=(22, 0))
-            tk.Entry(ffe, textvariable=self.font_file, font=("Consolas", 9), bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG, relief="flat", bd=4).pack(side="left", fill="x", expand=True)
-            ttk.Button(ffe, text="폰트 찾기", command=self._browse_font).pack(side="right", padx=(5, 0))
-            tk.Checkbutton(ff, text="영문·숫자·기호도 선택한 폰트로 (끄면 한글만)", variable=self.font_all_text, bg=self.BG, fg=self.FG, selectcolor=self.ENTRY_BG, activebackground=self.BG, activeforeground=self.FG, font=("맑은 고딕", 9)).pack(anchor="w", pady=(4, 0))
+            ffe.pack(fill="x", padx=(px(22), 0))
+            tk.Entry(ffe, textvariable=self.font_file, font=f(10), bg=self.ENTRY_BG, fg=self.FG, insertbackground=self.FG, relief="flat", bd=4).pack(side="left", fill="x", expand=True)
+            ttk.Button(ffe, text="폰트 찾기", command=self._browse_font).pack(side="right", padx=(px(5), 0))
+            tk.Checkbutton(ff, text="영문·숫자·기호도 선택한 폰트로 (끄면 한글만)", variable=self.font_all_text, pady=0, **option).pack(anchor="w", pady=(0 if compact else px(4), 0))
+
+            # 적용·복원 버튼은 맨 아래에 먼저 자리를 잡음: 창이 작으면 버튼이 아니라 로그 칸이 줄어듦
+            fb = tk.Frame(left, bg=self.BG)
+            fb.pack(side="bottom", fill="x", padx=side, pady=(0, edge))
+            self.btn_apply = ttk.Button(fb, text="🚀 패치 적용", command=self._start)
+            self.btn_apply.pack(side="left", fill="x", expand=True, ipady=px(3 if compact else 8))
+            self.btn_restore = ttk.Button(fb, text="↩ 복원 ▾", command=self._restore_menu)
+            self.btn_restore.pack(side="right", padx=(px(10), 0), ipady=px(3 if compact else 8))
 
             fp2 = tk.Frame(left, bg=self.BG)
-            fp2.pack(fill="x", padx=24, pady=(10, 5))
+            fp2.pack(fill="x", padx=side, pady=(gap, px(5)))
             self.progress = ttk.Progressbar(fp2, mode="determinate", style="TProgressbar")
             self.progress.pack(fill="x")
-            ttk.Label(fp2, textvariable=self.status_text, style="Status.TLabel").pack(anchor="w", pady=(3, 0))
+            ttk.Label(fp2, textvariable=self.status_text, style="Status.TLabel").pack(anchor="w", pady=(px(3), 0))
             # 적용 중에만 글자가 채워짐 (진행바가 다 찬 걸 보고 끝난 줄 알고 닫는 일 방지)
             self.lbl_busy = ttk.Label(fp2, text="", style="Busy.TLabel")
-            self.lbl_busy.pack(anchor="w", pady=(3, 0))
+            self.lbl_busy.pack(anchor="w", pady=(0 if compact else px(3), 0))
 
-            fl = tk.Frame(left, bg=self.BG)
-            fl.pack(fill="both", expand=True, padx=24, pady=(5, 10))
-            self.log_text = tk.Text(fl, height=7, bg=self.ENTRY_BG, fg="#7a7a9a", font=("Consolas", 8), relief="flat", bd=5, state="disabled")
-            self.log_text.pack(fill="both", expand=True)
-
-            fb = tk.Frame(left, bg=self.BG)
-            fb.pack(fill="x", padx=24, pady=(0, 20))
-            self.btn_apply = ttk.Button(fb, text="🚀 패치 적용", command=self._start)
-            self.btn_apply.pack(side="left", fill="x", expand=True, ipady=8)
-            self.btn_restore = ttk.Button(fb, text="↩ 복원", command=self._restore)
-            self.btn_restore.pack(side="right", padx=(10, 0), ipady=8)
+            if not compact:
+                fl = tk.Frame(left, bg=self.BG)
+                fl.pack(fill="both", expand=True, padx=side, pady=(px(5), px(10)))
+                self.log_text = tk.Text(fl, height=3, bg=self.ENTRY_BG, fg="#7a7a9a", font=f(9), relief="flat", bd=5, state="disabled")
+                self.log_text.pack(fill="both", expand=True)
 
         def _render_notes(self):
             """오른쪽 칸에 v1.0.0부터의 릴리즈 목록을 최신순으로 채우고, 고른 릴리즈의 내용(주요 작업)을 아래에 표시."""
             gp = self.game_path.get().strip()
-            current = PatchState(gp).patch_version if gp and Path(gp).is_dir() else None
+            # 번역을 끈 상태에서는 "아직 적용 안 됨" 표시를 하지 않음 (패치 적용을 눌러도 번역은 안 바뀜)
+            current = PatchState(gp).patch_version if gp and Path(gp).is_dir() and self.do_translate.get() else None
             selected = self._notes[self.notes_list.curselection()[0]]["tag"] if self._notes and self.notes_list.curselection() else None
             self._notes = release_history(self._releases, current) if self._releases else []
             self.notes_list.delete(0, "end")
@@ -1436,13 +1607,14 @@ def run_gui():
             if state.patch_version:
                 date = state.data.get("patch_date", "")[:10]
                 self.lbl_patch.configure(text=f"  📦 적용 패치: {state.patch_version}  ({date})", style="Info.TLabel")
-                if bid and state.game_was_updated(bid):
+                if bid and state.translate and state.game_was_updated(bid):
                     self.lbl_game.configure(text=f"  ⚠️ 게임 업데이트 감지! 재적용 권장 (build {bid})", style="Warn.TLabel")
                 else:
                     self.lbl_game.configure(text=f"  🎮 게임 빌드: {bid or '?'}")
             else:
-                self.lbl_patch.configure(text="  📦 패치 미적용")
+                self.lbl_patch.configure(text="  📦 패치 미적용" if state.translate else "  📦 번역 패치 사용 안 함 (게임 번역 그대로)")
                 self.lbl_game.configure(text=f"  🎮 게임 빌드: {bid or '?'}")
+            self.do_translate.set(state.translate)
             font = state.data.get("font") or {}
             self.font_mode.set(font.get("mode") if font.get("mode") in FONT_MODES else "none")
             if font.get("ttf"):
@@ -1484,7 +1656,7 @@ def run_gui():
                     state = PatchState(gp)
                     release = fetch_latest_release()
                     tag = release.get("tag_name", "")
-                    if state.is_outdated(tag):
+                    if state.translate and state.is_outdated(tag):
                         self.root.after(0, lambda: self._notify_new_patch(tag, state.patch_version))
                 except Exception:
                     pass
@@ -1554,11 +1726,11 @@ def run_gui():
             self.btn_apply.configure(text="⏳ 적용 중...")
             self._work()
             self._tick_busy(time.monotonic())
-            threading.Thread(target=self._run_patch, args=(gp, self.do_force.get(), font), daemon=True).start()
+            threading.Thread(target=self._run_patch, args=(gp, self.do_force.get(), font, self.do_translate.get()), daemon=True).start()
 
-        def _run_patch(self, gp, force=False, font=None):
-            orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t), font=font, working_cb=lambda: self.root.after(0, self._work))
-            if force:
+        def _run_patch(self, gp, force=False, font=None, translate=True):
+            orch = PatchOrchestrator(gp, log_cb=lambda m: self.root.after(0, self._log, m), status_cb=lambda m: self.root.after(0, self._status, m), progress_cb=lambda c, t: self.root.after(0, self._prog, c, t), font=font, working_cb=lambda: self.root.after(0, self._work), translate=translate)
+            if force and translate:
                 orch.state.data.pop("patch_version", None)
             res = orch.run()
             def done():
@@ -1579,24 +1751,62 @@ def run_gui():
                     messagebox.showerror("오류", res["message"])
             self.root.after(0, done)
 
-        def _restore(self):
+        def _restore_menu(self):
+            """복원 버튼 아래에 무엇을 되돌릴지 고르는 메뉴를 띄움."""
+            menu = tk.Menu(self.root, tearoff=0, bg=self.BG2, fg=self.FG, activebackground=self.ACCENT, activeforeground="#ffffff", font=self.f(10))
+            for what, label in RESTORE_PARTS.items():
+                menu.add_command(label=f"{label} 복원", command=lambda w=what: self._restore(w))
+            menu.tk_popup(self.btn_restore.winfo_rootx(), self.btn_restore.winfo_rooty() + self.btn_restore.winfo_height())
+
+        def _restore(self, what="all"):
             gp = self.game_path.get().strip()
             if not gp:
                 messagebox.showerror("오류", "경로를 지정해주세요.")
                 return
-            if not messagebox.askyesno("확인", "백업에서 복원하시겠습니까?\n(번역과 폰트 모두 원본으로 되돌립니다)"):
+            detail = {"all": "번역과 폰트 모두 원본으로 되돌립니다",
+                      "translation": "번역만 원본으로 되돌리고 폰트는 그대로 둡니다.\n'번역 패치 적용' 체크도 꺼집니다",
+                      "font": "폰트만 게임 기본으로 되돌리고 번역은 그대로 둡니다"}[what]
+            if not messagebox.askyesno("확인", f"백업에서 복원하시겠습니까?\n({detail})"):
                 return
-            try:
-                restored = restore_all(gp)
-            except Exception as exc:
-                messagebox.showerror("복원 실패", explain_error(exc))
-                return
-            if restored:
-                self._log("✅ 복원 완료")
+            # 폰트 복원은 큰 파일을 되돌리느라 몇 초 걸림: 적용 때처럼 작업 중임을 보여주고 창이 굳지 않게 따로 돌림
+            self._busy = True
+            self.btn_apply.configure(state="disabled")
+            self.btn_restore.configure(state="disabled")
+            self._status(f"{RESTORE_PARTS[what]} 복원 중...")
+            self._work()
+            self._tick_busy(time.monotonic())
+
+            def work():
+                try:
+                    outcome = restore_part(gp, what), None
+                except Exception as exc:
+                    log.exception("Restore failed")
+                    outcome = False, explain_error(exc)
+                self.root.after(0, done, *outcome)
+
+            def done(restored, error):
+                self._busy = False
+                self._stop_working()
+                self.lbl_busy.configure(text="")
+                self.btn_apply.configure(state="normal")
+                self.btn_restore.configure(state="normal")
                 self._refresh_info(gp)
-                messagebox.showinfo("완료", "복원 완료!")
-            else:
-                messagebox.showerror("오류", "백업을 찾을 수 없습니다.")
+                if error:
+                    self._log(f"❌ 복원 실패: {error}")
+                    self._status("❌ 복원 실패")
+                    messagebox.showerror("복원 실패", error)
+                elif restored:
+                    self._log(f"✅ 복원 완료 ({RESTORE_PARTS[what]})")
+                    self._status("✅ 복원 완료")
+                    messagebox.showinfo("완료", "복원 완료!")
+                elif what == "font":
+                    self._status("폰트는 이미 게임 기본 상태입니다.")
+                    messagebox.showinfo("안내", "폰트는 이미 게임 기본 상태입니다.")
+                else:
+                    self._status("백업을 찾을 수 없습니다.")
+                    messagebox.showerror("오류", "백업을 찾을 수 없습니다.")
+
+            threading.Thread(target=work, daemon=True).start()
 
     if sys.platform == "win32":
         try:
@@ -1605,14 +1815,17 @@ def run_gui():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("fnrkp089.LETransKr.Patcher")
         except Exception:
             pass
+    enable_dpi_awareness()
+    has_font = load_ui_font()
     root = tk.Tk()
+    family = UI_FONT_FAMILY if has_font and UI_FONT_FAMILY in tkfont.families(root) else UI_FONT_FALLBACK
     icon = Path(__file__).resolve().parent / APP_ICON
     if icon.is_file():
         try:
             root.iconbitmap(default=str(icon))
         except Exception:
             pass
-    PatcherApp(root)
+    PatcherApp(root, family)
     root.mainloop()
 
 
@@ -1624,7 +1837,8 @@ def run_cli():
     parser.add_argument("--cli", action="store_true", help="CLI 모드")
     parser.add_argument("--path", help="게임 폴더 경로")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--restore", action="store_true")
+    parser.add_argument("--restore", nargs="?", const="all", choices=list(RESTORE_PARTS), help="원본으로 복원 (생략 시 all)")
+    parser.add_argument("--font-only", action="store_true", help="번역은 건드리지 않고 폰트만 적용 (--font 필요)")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--font", choices=list(FONT_MODES), help="한국어 폰트 (생략 시 폰트는 건드리지 않음)")
     parser.add_argument("--font-file", help="--font custom에 쓸 .ttf/.otf 경로")
@@ -1632,6 +1846,8 @@ def run_cli():
     args = parser.parse_args()
     if args.font_file and not args.font:
         args.font = "custom"
+    if args.font_only and not args.font:
+        parser.error("--font-only에는 --font가 필요합니다")
 
     print(f"\n{'=' * 55}\n  Last Epoch 한국어 번역패치 v{PATCHER_VERSION}\n  github.com/{GITHUB_REPO}\n{'=' * 55}\n")
 
@@ -1657,12 +1873,12 @@ def run_cli():
         if st.patch_version:
             print(f"  패치: {st.patch_version} ({st.data.get('patch_date', '?')[:10]})")
         else:
-            print("  패치 미적용")
+            print("  패치 미적용" if st.translate else "  번역 패치 사용 안 함")
         print(f"  폰트: {FONT_MODES.get((st.data.get('font') or {}).get('mode'), FONT_MODES['none'])}")
         return
 
     if args.restore:
-        print("✅ 복원 완료!" if restore_all(gp) else "❌ 백업 없음")
+        print(f"✅ 복원 완료! ({RESTORE_PARTS[args.restore]})" if restore_part(gp, args.restore) else "❌ 되돌릴 것이 없음")
         return
 
     font = None
@@ -1679,8 +1895,8 @@ def run_cli():
             bar = "█" * int(pct // 2) + "░" * (50 - int(pct // 2))
             print(f"\r  [{bar}] {pct:.0f}%", end="", flush=True)
 
-    orch = PatchOrchestrator(gp, log_cb=lambda m: print(f"  {m}"), status_cb=lambda m: print(f"\n  >> {m}"), progress_cb=cli_prog, font=font)
-    if args.force:
+    orch = PatchOrchestrator(gp, log_cb=lambda m: print(f"  {m}"), status_cb=lambda m: print(f"\n  >> {m}"), progress_cb=cli_prog, font=font, translate=not args.font_only)
+    if args.force and not args.font_only:
         orch.state.data.pop("patch_version", None)
     res = orch.run()
     print()

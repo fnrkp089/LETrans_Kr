@@ -332,6 +332,96 @@ class FontTests(unittest.TestCase):
             {'name': 'LastEpoch_KR_Patcher.exe', 'browser_download_url': 'patcher'}]})
         self.assertEqual(assets['font_tool']['url'], 'tool')
 
+    def run_patch(self, translate, mode='bold'):
+        done = {'success': True, 'version': 'v9', 'files': [], 'message': 'translated'}
+        with patch.object(patcher, 'find_local_font_tool', return_value=self.tool), \
+                patch.object(patcher, 'fetch_latest_release', side_effect=AssertionError('network')), \
+                patch.object(patcher.PatchOrchestrator, '_run_translation', return_value=done) as translation:
+            result = patcher.PatchOrchestrator(self.game, font={'mode': mode}, translate=translate).run()
+        return result, translation.called
+
+    def test_font_only_skips_translation_and_remembers_choice(self):
+        result, translated = self.run_patch(translate=False)
+        self.assertTrue(result['success'], result['message'])
+        self.assertFalse(translated)
+        self.assertEqual(self.resources.read_bytes(), b'original assets+Pretendard-Bold')
+        state = patcher.PatchState(self.game)
+        self.assertFalse(state.translate)
+        self.assertIsNone(state.patch_version)
+        # 같은 폰트로 다시 눌러도 할 일이 없다고 알려줌
+        result, _ = self.run_patch(translate=False)
+        self.assertIn('변경 없음', result['message'])
+        self.assertEqual(len(self.packages), 1)
+        # 번역을 다시 켜면 기억도 되돌림
+        result, translated = self.run_patch(translate=True)
+        self.assertTrue(translated)
+        self.assertTrue(patcher.PatchState(self.game).translate)
+
+    def test_font_only_failure_does_not_claim_translation(self):
+        with patch.object(patcher, 'run_font_tool', side_effect=RuntimeError('tool died')):
+            result, _ = self.run_patch(translate=False)
+        self.assertFalse(result['success'])
+        self.assertNotIn('번역 패치는 적용됨', result['message'])
+        self.assertTrue(patcher.PatchState(self.game).translate)
+
+    def test_translation_and_font_restore_separately(self):
+        locale = self.game / patcher.BUNDLE_SUBDIR / patcher.BUNDLE_FILENAME
+        locale.parent.mkdir(parents=True)
+        catalog = self.game / patcher.CATALOG_RELPATH
+        locale.write_bytes(b'official ko')
+        catalog.write_bytes(b'official catalog')
+        patcher.create_backup(self.game)
+        locale.write_bytes(b'patched ko')
+        self.state.update('v1.0.8', '100', 'hash', ['UI_ko.json'])
+        self.apply('bold')
+
+        self.assertTrue(patcher.restore_part(self.game, 'translation'))
+        self.assertEqual(locale.read_bytes(), b'official ko')
+        self.assertEqual(self.resources.read_bytes(), b'original assets+Pretendard-Bold')
+        state = patcher.PatchState(self.game)
+        self.assertIsNone(state.patch_version)
+        self.assertFalse(state.translate)
+        self.assertTrue(patcher.font_is_applied(self.game, state, {'mode': 'bold'}))
+
+        self.assertTrue(patcher.restore_part(self.game, 'font'))
+        self.assertEqual(self.resources.read_bytes(), b'original assets')
+        self.assertFalse(patcher.restore_part(self.game, 'font'))
+        with self.assertRaises(ValueError):
+            patcher.restore_part(self.game, 'everything')
+
+    def test_restoring_everything_leaves_no_state_file(self):
+        locale = self.game / patcher.BUNDLE_SUBDIR / patcher.BUNDLE_FILENAME
+        locale.parent.mkdir(parents=True)
+        (self.game / patcher.CATALOG_RELPATH).write_bytes(b'official catalog')
+        locale.write_bytes(b'official ko')
+        patcher.create_backup(self.game)
+        self.state.update('v1.0.8', '100', 'hash', ['UI_ko.json'])
+        self.apply('bold')
+        self.assertTrue(patcher.restore_part(self.game, 'all'))
+        self.assertEqual(self.resources.read_bytes(), b'original assets')
+        self.assertFalse((self.game / patcher.PATCH_STATE_FILE).exists())
+
+
+class WindowFitTests(unittest.TestCase):
+    def test_window_never_exceeds_screen_and_small_screens_get_compact_layout(self):
+        # 1920x1080 at 100%: full size, normal layout
+        self.assertEqual(patcher.fit_window(1920, 1032, 1.0), (*patcher.WINDOW_SIZE, False))
+        # 1920x1200 at 200% (8-inch UMPC): the window must fit the 1104px work area including its title bar
+        width, height, compact = patcher.fit_window(1920, 1104, 2.0)
+        frame_w, frame_h = patcher.window_frame(2.0)
+        self.assertLessEqual(width + frame_w, 1920)
+        self.assertLessEqual(height + frame_h, 1104)
+        self.assertTrue(compact)
+        # 1366x768 at 100%: shorter than the full window, so compact layout
+        self.assertEqual(patcher.fit_window(1366, 720, 1.0), (patcher.WINDOW_SIZE[0], 680, True))
+
+    def test_bundled_ui_font_is_shipped_with_its_notice(self):
+        import build_package
+        self.assertIn(patcher.UI_FONT_FILE, build_package.APP_FILES)
+        self.assertIn('Maplestory-LICENSE.txt', build_package.APP_FILES)
+        for name in build_package.APP_FILES:
+            self.assertTrue((Path(build_package.HERE) / name).is_file(), name)
+
 
 class StaleLockTests(unittest.TestCase):
     def test_only_locks_of_dead_processes_are_cleared(self):
