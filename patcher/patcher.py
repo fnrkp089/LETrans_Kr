@@ -69,7 +69,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.8.5"
+PATCHER_VERSION = "0.8.6"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -386,6 +386,29 @@ def _backup_files(game, backup_dir, metadata):
     return pairs
 
 
+def _kept_by_update(game, backup_dir, metadata):
+    """게임 빌드가 바뀌었어도 Steam이 교체하지 않아 우리가 패치한 그대로인 파일 이름들.
+
+    그런 파일의 원본은 이전 빌드의 백업에만 있음: 지금 파일을 새로 백업하면 패치본이 원본 자리에 들어감.
+    """
+    state, kept = PatchState(game).data, set()
+    for name, record in (metadata.get('files') or {}).items():
+        saved, target = backup_dir / name, game / record['path']
+        if not (saved.is_file() and target.is_file()) or sha256_file(saved) != record.get('sha256'):
+            continue
+        if name == SHARED_BUNDLE_FILENAME:
+            ours = sha256_file(target) == state.get('shared_bundle_hash')
+        elif name.startswith('catalog'):
+            # LELocalePatch는 카탈로그에서 번들 CRC만 0으로 지움. 새 빌드의 카탈로그면 0이 아닌 값이 달라짐
+            current, original = target.read_bytes(), saved.read_bytes()
+            ours = len(current) == len(original) and not any(a for a, b in zip(current, original) if a != b)
+        else:
+            ours = sha256_file(target) == state.get('bundle_hash')
+        if ours:
+            kept.add(name)
+    return kept
+
+
 class _StagingDir:
     """parent 아래에 만들었다가 끝나면 지우는 작업 폴더.
 
@@ -453,16 +476,16 @@ def create_backup(game_path):
         with _StagingDir(game, '.kr-backup-') as tmp:
             stage = tmp / 'backup'; stage.mkdir()
             files = {}
+            old = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.exists() else {}
+            # 게임 업데이트가 우리가 패치한 파일을 그대로 뒀으면 그 원본은 이전 백업에만 있음
+            kept = _kept_by_update(game, backup_dir, old)
             for path in [bundle, catalog]:
-                shutil.copy2(path, stage / path.name)
+                shutil.copy2(backup_dir / path.name if path.name in kept else path, stage / path.name)
                 files[path.name] = {'path': str(path.relative_to(game)), 'sha256': sha256_file(stage / path.name)}
-            # 게임 업데이트가 우리가 고친 공용 키 번들을 그대로 뒀으면 그 원본은 이전 백업에만 있음
             shared = bundle.parent / SHARED_BUNDLE_FILENAME
-            old = (json.loads(metadata_path.read_text(encoding='utf-8')).get('files') or {}).get(shared.name) if metadata_path.exists() else None
-            if (old and (backup_dir / shared.name).is_file() and shared.is_file()
-                    and sha256_file(shared) == PatchState(game_path).data.get('shared_bundle_hash')):
+            if shared.name in kept:
                 shutil.copy2(backup_dir / shared.name, stage / shared.name)
-                files[shared.name] = old
+                files[shared.name] = old['files'][shared.name]
             write_json(stage / 'backup_state.json', {'buildid': buildid, 'files': files})
             archive = None
             if backup_dir.exists():
@@ -486,7 +509,9 @@ def restore_backup(game_path):
     metadata_path = backup_dir / 'backup_state.json'
     metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.exists() else {}
     saved_build, current_build = metadata.get('buildid'), get_steam_buildid(game_path)
-    if saved_build and current_build and saved_build != current_build:
+    # 빌드가 달라도 Steam이 이 파일들을 교체하지 않았으면 백업은 여전히 그 원본
+    if (saved_build and current_build and saved_build != current_build
+            and not (metadata.get('files') and _kept_by_update(game, backup_dir, metadata) == set(metadata['files']))):
         raise RuntimeError('다른 게임 빌드의 백업. Steam 무결성 검사로 복원 필요')
     pairs = _backup_files(game, backup_dir, metadata)
     aa = game / Path(BUNDLE_SUBDIR).parent

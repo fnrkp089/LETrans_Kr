@@ -59,6 +59,42 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(list(self.game.glob(patcher.BACKUP_DIR_NAME + '_*')))
         self.assertEqual((self.game / patcher.BACKUP_DIR_NAME / self.bundle.name).read_bytes(), b'new game')
 
+    def _patch_translation(self):
+        """LELocalePatch처럼 번들을 바꾸고 카탈로그의 CRC를 0으로 지운 뒤 상태 기록."""
+        self.bundle.write_bytes(b'patched bundle')
+        self.catalog.write_bytes(b'original\0\0\0\0alog')
+        patcher.PatchState(self.game).update('v1.0.0', '100', patcher.sha256_file(self.bundle), [])
+
+    def test_update_keeping_patched_files_keeps_old_original(self):
+        patcher.create_backup(self.game)
+        self._patch_translation()
+        with patch.object(patcher, 'get_steam_buildid', return_value='101'):
+            backup = Path(patcher.create_backup(self.game))
+            self.assertEqual((backup / self.bundle.name).read_bytes(), b'original bundle')
+            self.assertEqual((backup / self.catalog.name).read_bytes(), b'original catalog')
+            self.assertTrue(patcher.restore_backup(self.game))
+        self.assertEqual(self.bundle.read_bytes(), b'original bundle')
+        self.assertEqual(self.catalog.read_bytes(), b'original catalog')
+
+    def test_update_replacing_only_catalog_backs_up_new_catalog(self):
+        patcher.create_backup(self.game)
+        self._patch_translation()
+        self.catalog.write_bytes(b'updated catalog!')
+        with patch.object(patcher, 'get_steam_buildid', return_value='101'):
+            with self.assertRaises(RuntimeError):
+                patcher.restore_backup(self.game)
+            backup = Path(patcher.create_backup(self.game))
+        self.assertEqual((backup / self.bundle.name).read_bytes(), b'original bundle')
+        self.assertEqual((backup / self.catalog.name).read_bytes(), b'updated catalog!')
+
+    def test_untouched_patch_restores_across_builds_without_new_backup(self):
+        patcher.create_backup(self.game)
+        self._patch_translation()
+        with patch.object(patcher, 'get_steam_buildid', return_value='101'):
+            self.assertTrue(patcher.restore_backup(self.game))
+        self.assertEqual(self.bundle.read_bytes(), b'original bundle')
+        self.assertEqual(self.catalog.read_bytes(), b'original catalog')
+
     def test_ordinary_restore_failure_rolls_back_both_files(self):
         patcher.create_backup(self.game)
         self.bundle.write_bytes(b'patched bundle')
