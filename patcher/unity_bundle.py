@@ -363,6 +363,174 @@ def add_key_aliases(raw, aliases):
     return patched, added
 
 
+def _rewrite(raw, change):
+    """번들의 모든 MonoBehaviour에 change(타입 트리, 바이트)를 적용. 새 바이트를 돌려준 오브젝트만 바꿈.
+
+    바뀐 것이 없으면 None.
+    """
+    bundle = Bundle(raw)
+    touched = False
+    for index, (_, _, _, name) in enumerate(bundle.nodes):
+        if name.endswith((".resS", ".resource")):
+            continue
+        assets = SerializedFile(bundle.file(index))
+        for number, (_, _, _, type_index) in enumerate(assets.objects):
+            class_id, root = assets.types[type_index]
+            if class_id != MONO_BEHAVIOUR or not root:
+                continue
+            data = change(root, assets.object_bytes(number))
+            if data is not None:
+                assets.replaced[number] = data
+        if assets.replaced:
+            bundle.replace_file(index, assets.to_bytes())
+            touched = True
+    return bundle.to_bytes() if touched else None
+
+
+def _offset(root, data, target):
+    """최상위 필드 target이 시작하는 위치."""
+    pos = 0
+    for child in root.children:
+        if child is target:
+            return pos
+        pos = _skip(child, data, pos)
+    raise BundleError("필드를 찾을 수 없음")
+
+
+def _text(data, pos):
+    (length,) = struct.unpack_from("<i", data, pos)
+    return bytes(data[pos + 4:pos + 4 + length])
+
+
+def _packed(text):
+    return struct.pack("<i", len(text)) + text + bytes(_align(len(text), 4) - len(text))
+
+
+def _is_text(node):
+    return len(node.children) == 1 and node.children[0].is_array and node.children[0].children[1].size == 1
+
+
+def _string_table(root):
+    """StringTable 모양이면 (m_Name 노드, m_TableData 배열 노드, 항목 노드). 아니면 None."""
+    data = _child(root, "m_TableData") if root else None
+    if not data or len(data.children) != 1 or not data.children[0].is_array or len(root.children) < 4:
+        return None
+    element = data.children[0].children[1]
+    names = [c.name for c in element.children]
+    if names[:2] != ["m_Id", "m_Localized"] or element.children[0].size != 8 or not _is_text(element.children[1]):
+        return None
+    # MonoBehaviour의 네 번째 필드가 m_Name (이름은 Unity 공통 문자열표 참조라 읽히지 않음)
+    if not _is_text(root.children[3]):
+        return None
+    return root.children[3], data, element
+
+
+def add_keys(raw, table, keys):
+    """공용 키 번들의 table 표에 {키 이름: id}를 새 항목으로 추가. (새 번들 바이트, {키 이름: 표에서 쓰는 id}) 반환.
+
+    이름이 이미 있으면 건드리지 않고 있는 id를 알려 줌. id를 다른 이름이 쓰고 있으면 그 이름은 결과에서 빠짐.
+    추가한 것이 없으면 새 번들 바이트는 None.
+    """
+    resolved, added = {}, {}
+
+    def change(root, data):
+        found, name = _key_table(root), _child(root, "m_TableCollectionName")
+        if not found or not name or not _is_text(name) or _text(data, _offset(root, data, name)) != table.encode("utf-8"):
+            return None
+        entries, element, _ = found
+        pos = _offset(root, data, entries)
+        (count,) = struct.unpack_from("<i", data, pos)
+        existing, at = {}, pos + 4
+        for _ in range(count):
+            (key_id,) = struct.unpack_from("<q", data, at)
+            existing[_text(data, at + 8)] = key_id
+            at = _skip(element, data, at)
+        used, extra, new = set(existing.values()), bytearray(), 0
+        for key, key_id in keys.items():
+            key_bytes = key.encode("utf-8")
+            if key_bytes in existing:
+                resolved[key] = existing[key_bytes]
+            elif key_id not in used:
+                # 메타데이터 없는 항목: id, 이름, 빈 목록
+                extra += struct.pack("<q", key_id) + _packed(key_bytes) + struct.pack("<i", 0)
+                used.add(key_id)
+                resolved[key] = added[key] = key_id
+                new += 1
+        if not new:
+            return None
+        return bytes(data[:pos]) + struct.pack("<i", count + new) + bytes(data[pos + 4:at]) + bytes(extra) + bytes(data[at:])
+
+    patched = _rewrite(raw, change)
+    if not added:
+        return None, resolved
+    if list_keys(patched) != dict(list_keys(raw), **added):
+        raise BundleError("수정한 번들 확인 실패")
+    return patched, resolved
+
+
+def set_strings(raw, name, texts):
+    """문자열 표 번들에서 이름이 name인 표(예: Abilities_ko)에 {id: 글}을 넣음. (새 번들 바이트, 바뀐 id들) 반환.
+
+    표에 있는 id는 글만 바꾸고 없는 id는 새 항목으로 추가. 이미 같은 글이면 건드리지 않음.
+    바뀐 것이 없으면 (None, []).
+    """
+    changed = []
+
+    def change(root, data):
+        found = _string_table(root)
+        if not found or _text(data, _offset(root, data, found[0])) != name.encode("utf-8"):
+            return None
+        _, table, element = found
+        pos = _offset(root, data, table)
+        (count,) = struct.unpack_from("<i", data, pos)
+        body, at, seen = bytearray(), pos + 4, set()
+        for _ in range(count):
+            (entry_id,) = struct.unpack_from("<q", data, at)
+            end, after_text = _skip(element, data, at), _skip(element.children[1], data, at + 8)
+            wanted = texts.get(entry_id)
+            seen.add(entry_id)
+            if wanted is not None and wanted.encode("utf-8") != _text(data, at + 8):
+                body += struct.pack("<q", entry_id) + _packed(wanted.encode("utf-8")) + bytes(data[after_text:end])
+                changed.append(entry_id)
+            else:
+                body += data[at:end]
+            at = end
+        new = [entry_id for entry_id in texts if entry_id not in seen]
+        for entry_id in new:
+            body += struct.pack("<q", entry_id) + _packed(texts[entry_id].encode("utf-8")) + struct.pack("<i", 0)
+        changed.extend(new)
+        if not changed:
+            return None
+        return bytes(data[:pos]) + struct.pack("<i", count + len(new)) + bytes(body) + bytes(data[at:])
+
+    patched = _rewrite(raw, change)
+    if not changed:
+        return None, []
+    if list_strings(patched, name) != {**list_strings(raw, name), **{i: texts[i] for i in changed}}:
+        raise BundleError("수정한 번들 확인 실패")
+    return patched, changed
+
+
+def list_strings(raw, name):
+    """문자열 표 번들에서 이름이 name인 표의 {id: 글} (검증·테스트용)."""
+    strings = {}
+
+    def read(root, data):
+        found = _string_table(root)
+        if found and _text(data, _offset(root, data, found[0])) == name.encode("utf-8"):
+            _, table, element = found
+            pos = _offset(root, data, table)
+            (count,) = struct.unpack_from("<i", data, pos)
+            pos += 4
+            for _ in range(count):
+                (entry_id,) = struct.unpack_from("<q", data, pos)
+                strings[entry_id] = _text(data, pos + 8).decode("utf-8")
+                pos = _skip(element, data, pos)
+
+    _rewrite(raw, read)
+    return strings
+
+
 def list_keys(raw):
     """번들 안 모든 키 테이블의 {키 이름: id} (검증·테스트용)."""
     bundle = Bundle(raw)

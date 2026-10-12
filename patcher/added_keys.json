@@ -1,0 +1,114 @@
+{
+  "Abilities": {
+    "Ability_Bloodrage Buff 11.1 IcyAoEDamage_Description": {
+      "id": 8800000000000000001,
+      "en": "Creates an expanding wave of ice that deals cold damage over time to enemies in the area for 5 seconds.\n\nThis effect has a 10% chance to occur when hitting a boss or rare enemy (up to 1 time every 10 seconds), and a 100% chance to occur when killing a boss or rare enemy (no limit).",
+      "ko": "주위로 퍼져 나가는 얼음 파동을 생성하여, 범위 내 적들에게 5초 동안 냉기 지속 피해를 줍니다.\n\n이 효과는 보스 또는 희귀 적 적중 시 10%의 확률로 발생하고(10초마다 최대 1회), 보스 또는 희귀 적 처치 시 100%의 확률로 발생합니다(제한 없음)."
+    },
+    "Ability_Bloodrage Buff 11.1 IcyAoEDamage_AltText": {
+      "id": 8800000000000000002,
+      "en": "Added damage applies at 500% effectiveness per second.",
+      "ko": "추가 피해가 매초 500%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 12.1 ShockwaveAbility_Description": {
+      "id": 8800000000000000003,
+      "en": "Creates three shockwaves of ice diverging from your arrival location when you use a traversal skill, dealing physical and cold damage. Enemies near the origin can be hit by all three shockwaves.",
+      "ko": "기동 스킬 사용 시 도착 지점에서 세 갈래로 퍼지는 얼음 충격파 3개를 생성하여 물리 및 냉기 피해를 줍니다. 시작 지점 근처의 적은 충격파 3개에 모두 적중당할 수 있습니다."
+    },
+    "Ability_Bloodrage Buff 12.1 ShockwaveAbility_AltText": {
+      "id": 8800000000000000004,
+      "en": "Added melee damage applies at 200% effectiveness.",
+      "ko": "추가 근접 피해가 200%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 14.1 Rune On Ground_Description": {
+      "id": 8800000000000000005,
+      "en": "Your minion creates a rune that explodes after a short delay, dealing physical damage.\n\nThis effect has a 30% chance to occur when your minions kill an enemy, and a 100% chance when your minions die.",
+      "ko": "하수인이 잠시 후 폭발하여 물리 피해를 주는 룬을 생성합니다.\n\n이 효과는 하수인이 적 처치 시 30%의 확률로, 하수인 사망 시 100%의 확률로 발생합니다."
+    },
+    "Ability_Bloodrage Buff 14.1 Rune On Ground_AltText": {
+      "id": 8800000000000000006,
+      "en": "Added minion spell damage applies at 300% effectiveness.",
+      "ko": "추가 하수인 주문 피해가 300%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 14.2 Rune Explosion_Description": {
+      "id": 8800000000000000007,
+      "en": "Creates runes under 5 enemies within 12 meters. After a brief delay they explode, damaging enemies within the area. If there are fewer than 5 enemies, only one rune will be created for each nearby enemy, but enemies within range of multiple runes can be damaged by each of them.\n\n\nOccurs when you evade.",
+      "ko": "12미터 이내의 적 5마리 아래에 룬을 생성합니다. 룬은 잠시 후 폭발하여 범위 내 적들에게 피해를 줍니다. 적이 5마리보다 적으면 주위의 적 하나당 룬이 하나씩만 생성되지만, 여러 룬의 범위 안에 있는 적은 각 룬에게 피해를 받을 수 있습니다.\n\n피하기 사용 시 발생합니다."
+    },
+    "Ability_Bloodrage Buff 14.2 Rune Explosion_AltText": {
+      "id": 8800000000000000008,
+      "en": "Added spell damage applies at 300% effectiveness.",
+      "ko": "추가 주문 피해가 300%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 15.1 Blood Explosion_Description": {
+      "id": 8800000000000000009,
+      "en": "An explosion of blood, dealing physical damage to nearby enemies. Occurs when you kill an enemy, even if they were killed by this effect.",
+      "ko": "피가 폭발하여 주위 적들에게 물리 피해를 줍니다. 적 처치 시 발생하며, 이 효과로 처치한 경우에도 발생합니다."
+    },
+    "Ability_Bloodrage Buff 15.1 Blood Explosion_AltText": {
+      "id": 8800000000000000010,
+      "en": "Added spell damage applies at 200% effectiveness.",
+      "ko": "추가 주문 피해가 200%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 16 RageAura_Description": {
+      "id": 8800000000000000011,
+      "en": "You emit an aura of rage, dealing physical damage over time to enemies within 3 meters.",
+      "ko": "격노의 오라를 내뿜어 3미터 이내의 적들에게 물리 지속 피해를 줍니다."
+    },
+    "Ability_Bloodrage Buff 16 RageAura_AltText": {
+      "id": 8800000000000000012,
+      "en": "Added spell damage applies at 300% effectiveness per second.",
+      "ko": "추가 주문 피해가 매초 300%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 16.1 Actual RageAura_Description": {
+      "id": 8800000000000000013,
+      "en": "You emit an aura of rage, dealing physical damage over time to enemies within 3 meters.",
+      "ko": "격노의 오라를 내뿜어 3미터 이내의 적들에게 물리 지속 피해를 줍니다."
+    },
+    "Ability_Bloodrage Buff 16.1 Actual RageAura_AltText": {
+      "id": 8800000000000000014,
+      "en": "Added spell damage applies at 300% effectiveness per second.",
+      "ko": "추가 주문 피해가 매초 300%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 17.1 Shards_Description": {
+      "id": 8800000000000000015,
+      "en": "Sends forth a piercing shard of blood and ice, dealing physical and cold damage.\n\nThis effect occurs whenever you directly use an ability (up to 3 times per 2 seconds).",
+      "ko": "적을 관통하는 피얼음 조각을 발사하여 물리 및 냉기 피해를 줍니다.\n\n이 효과는 능력을 직접 사용할 때마다 발생합니다(2초당 최대 3회)."
+    },
+    "Ability_Bloodrage Buff 17.1 Shards_AltText": {
+      "id": 8800000000000000016,
+      "en": "Added spell damage applies at 200% effectiveness.",
+      "ko": "추가 주문 피해가 200%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 19.1 RuneArea_Description": {
+      "id": 8800000000000000017,
+      "en": "Creates a rune on the ground that buffs allies within it, including you. The rune grants 20% more damage and 20% less mana cost (both multiplicative with other modifiers), and 20% increased attack and cast speed.\n\nA rune appears once every 6 seconds while in combat, and lasts for 4 seconds.",
+      "ko": "바닥에 룬을 생성하여, 당신을 포함해 그 안에 있는 아군에게 버프를 부여합니다. 이 룬은 주는 피해를 20% 증폭시키고 마나 비용을 20% 감폭시키며(둘 다 다른 속성과 곱연산), 공격 및 시전 속도를 20% 증가시킵니다.\n\n룬은 전투 중 6초마다 나타나며, 4초 지속됩니다."
+    },
+    "Ability_Bloodrage Buff 20 Minion RageAura_Description": {
+      "id": 8800000000000000018,
+      "en": "Your minions emit a 2 meter aura of boiling rage, dealing physical damage over time to enemies. Multiple minions with this aura can damage the same enemy.",
+      "ko": "하수인들이 2미터 범위의 끓어오르는 격노의 오라를 내뿜어 적들에게 물리 지속 피해를 줍니다. 이 오라를 가진 여러 하수인이 같은 적에게 피해를 줄 수 있습니다."
+    },
+    "Ability_Bloodrage Buff 20 Minion RageAura_AltText": {
+      "id": 8800000000000000019,
+      "en": "Added minion spell damage applies at 100% effectiveness per second.",
+      "ko": "추가 하수인 주문 피해가 매초 100%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 23.2 BloodMineExploding_Description": {
+      "id": 8800000000000000020,
+      "en": "Once every two seconds while in combat an orb of blood will appear within 8 meters of you, and will detonate when touched by an enemy. They will attempt to appear on enemies.",
+      "ko": "전투 중 2초마다 당신 주위 8미터 이내에 피의 보주가 나타나며, 적이 닿으면 폭발합니다. 피의 보주는 되도록 적이 있는 위치에 나타납니다."
+    },
+    "Ability_Bloodrage Buff 23.2 BloodMineExploding_AltText": {
+      "id": 8800000000000000021,
+      "en": "Added spell damage applies at 400% effectiveness.",
+      "ko": "추가 주문 피해가 400%의 효율로 적용됩니다."
+    },
+    "Ability_Bloodrage Buff 24 BloodPotion_Description": {
+      "id": 8800000000000000022,
+      "en": "Creates a blood potion which can be consumed by walking over it. Blood potions restore health equal to 40% of your maximum health, and grant 70% increased movement speed for 1 second.\n\nThis effect has a 10% chance to occur when killing an enemy or hitting a boss or rare enemy (up to 2 times per 4 seconds).",
+      "ko": "밟고 지나가면 소모되는 피 물약을 생성합니다. 피 물약은 최대 생명력의 40%만큼 생명력을 회복시키고, 1초 동안 이동 속도를 70% 증가시킵니다.\n\n이 효과는 적 처치 시 또는 보스 또는 희귀 적 적중 시 10%의 확률로 발생합니다(4초당 최대 2회)."
+    }
+  }
+}

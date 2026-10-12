@@ -69,7 +69,7 @@ except ImportError:
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
 STEAM_APP_ID = "899770"
 GAME_FOLDER_NAME = "Last Epoch"
-PATCHER_VERSION = "0.8.6"
+PATCHER_VERSION = "0.8.7"
 
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 GITHUB_API_LATEST = f"{GITHUB_API_RELEASES}/latest"
@@ -97,7 +97,7 @@ CATALOG_RELPATH = Path("Last Epoch_Data") / "StreamingAssets" / "aa" / "catalog.
 PATCH_STATE_FILE = "kr_patch_state.json"
 BACKUP_DIR_NAME = "kr_patch_backup"
 # 상태 파일에서 번역 패치가 쓰는 항목. 그 밖(폰트 기록 "font", 번역 사용 여부 "translate")은 번역을 복원해도 남김
-TRANSLATION_STATE_KEYS = ("patch_version", "patch_date", "game_buildid", "bundle_hash", "patcher_version", "files_applied", "shared_bundle_hash")
+TRANSLATION_STATE_KEYS = ("patch_version", "patch_date", "game_buildid", "bundle_hash", "patcher_version", "files_applied", "shared_bundle_hash", "added_keys")
 RESTORE_PARTS = {"all": "번역과 폰트 모두", "translation": "번역만", "font": "폰트만"}
 
 # 모든 언어가 같이 쓰는 키 이름표. 게임이 찾는 이름이 여기 없으면 번역이 있어도 키 번호가 그대로 나옴
@@ -105,6 +105,9 @@ SHARED_BUNDLE_FILENAME = "localization-assets-shared_assets_all.bundle"
 # {게임에 빠진 키 이름: 같은 글을 가리키는 기존 키 이름}
 # 1156(마나 및 마나 재생 증가): 제련 창이 찾는 DisplayName 키가 없어 이름이 "1156"으로 나옴
 KEY_ALIASES = {"Item_Affix_1156_DisplayName": "Item_Affix_1156_LootFilterOverride"}
+# 게임에 키 자체가 없어 어느 언어에서나 영어로 나오는 글: 번역 패키지에 든 이 파일대로 키와 한국어 글을 추가
+ADDED_KEYS_FILE = "added_keys.json"
+STRING_TABLE_SUFFIX = "_ko"
 
 # 폰트 패치 (LEFontPatch): 한국어 폰트 에셋은 번역 번들이 아니라 resources.assets와,
 # UI 대부분이 쓰는 사본이 든 PermaLoad.bundle 두 곳에 있음. 한쪽만 바꾸면 글자마다 폰트가 섞임
@@ -545,25 +548,85 @@ def apply_key_aliases(game_path, state):
     shared = game / BUNDLE_SUBDIR / SHARED_BUNDLE_FILENAME
     if not shared.is_file():
         return []
-    backup_dir = game / BACKUP_DIR_NAME
-    metadata_path = backup_dir / 'backup_state.json'
     with workspace_lock(game / Path(BUNDLE_SUBDIR).parent):
         raw = shared.read_bytes()
         patched, added = unity_bundle.add_key_aliases(raw, KEY_ALIASES)
         if not added:
             return []
-        if not metadata_path.is_file():
-            raise RuntimeError('번역 백업이 없어 공용 키 번들을 고치지 않음')
-        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
-        if not metadata.get('files'):
-            raise RuntimeError('번역 백업 정보가 없어 공용 키 번들을 고치지 않음')
+        _write_shared(game, state, raw, patched)
+    return added
+
+
+def _write_shared(game, state, raw, patched):
+    """고친 공용 키 번들(patched)을 기록. 지금 파일(raw)이 원본이면 번역 백업에 먼저 넣음."""
+    shared = game / BUNDLE_SUBDIR / SHARED_BUNDLE_FILENAME
+    backup_dir = game / BACKUP_DIR_NAME
+    metadata_path = backup_dir / 'backup_state.json'
+    if not metadata_path.is_file():
+        raise RuntimeError('번역 백업이 없어 공용 키 번들을 고치지 않음')
+    metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+    if not metadata.get('files'):
+        raise RuntimeError('번역 백업 정보가 없어 공용 키 번들을 고치지 않음')
+    # 이미 우리가 고친 파일이면 백업에 있는 원본을 그대로 둠
+    ours = shared.name in metadata['files'] and hashlib.sha256(raw).hexdigest() == state.data.get('shared_bundle_hash')
+    if not ours:
         atomic_write(backup_dir / shared.name, raw)
         metadata['files'][shared.name] = {'path': str(shared.relative_to(game)), 'sha256': hashlib.sha256(raw).hexdigest()}
         write_json(metadata_path, metadata)
-        atomic_write(shared, patched)
-        state.data['shared_bundle_hash'] = hashlib.sha256(patched).hexdigest()
-        state.save()
-    return added
+    atomic_write(shared, patched)
+    state.data['shared_bundle_hash'] = hashlib.sha256(patched).hexdigest()
+    state.save()
+
+
+def load_added_keys(path):
+    """번역 패키지의 ADDED_KEYS_FILE → {표 이름: {키 이름: (id, 한국어 글)}}. 형식이 다르면 ValueError."""
+    data = json.loads(Path(path).read_text(encoding='utf-8'))
+    if not isinstance(data, dict):
+        raise ValueError('추가 키 파일 형식 오류')
+    tables = {}
+    for table, keys in data.items():
+        if not isinstance(keys, dict):
+            raise ValueError(f'추가 키 파일 형식 오류: {table}')
+        for name, item in keys.items():
+            key_id, text = (item.get('id'), item.get('ko')) if isinstance(item, dict) else (None, None)
+            if type(key_id) is not int or not 0 < key_id < 2 ** 63 or not isinstance(text, str) or not text.strip():
+                raise ValueError(f'추가 키 파일 형식 오류: {name}')
+            tables.setdefault(table, {})[name] = (key_id, text)
+    return tables
+
+
+def apply_added_keys(game_path, state, tables):
+    """게임에 키 자체가 없어 영어로만 나오는 글에 키와 한국어 글을 추가. 게임에 들어간 키 이름들 반환.
+
+    tables는 load_added_keys의 결과. 공용 키 번들에 키 이름을, 한국어 번들의 같은 표에 글을 넣음.
+    게임이 그 키를 직접 갖게 되면(id가 우리 것과 다름) 그 키는 건드리지 않음: 그때는 일반 번역 파일이 맡음.
+    한국어 번들을 고치므로 부른 쪽에서 bundle_hash를 다시 기록해야 함.
+    """
+    game = Path(game_path).resolve()
+    shared = game / BUNDLE_SUBDIR / SHARED_BUNDLE_FILENAME
+    bundle = find_bundle_path(game)
+    if not tables or bundle is None or not shared.is_file():
+        return []
+    with workspace_lock(game / Path(BUNDLE_SUBDIR).parent):
+        shared_raw, strings_raw = shared.read_bytes(), bundle.read_bytes()
+        shared_new, strings_new, applied = shared_raw, strings_raw, []
+        for table, keys in tables.items():
+            patched, resolved = unity_bundle.add_keys(shared_new, table, {name: key_id for name, (key_id, _) in keys.items()})
+            shared_new = patched or shared_new
+            ours = {name: keys[name] for name, key_id in resolved.items() if key_id == keys[name][0]}
+            patched, _ = unity_bundle.set_strings(strings_new, table + STRING_TABLE_SUFFIX, dict(ours.values()))
+            strings_new = patched or strings_new
+            present = unity_bundle.list_strings(strings_new, table + STRING_TABLE_SUFFIX)
+            applied += [name for name, (key_id, text) in ours.items() if present.get(key_id) == text]
+        if strings_new != strings_raw or shared_new != shared_raw:
+            if not (game / BACKUP_DIR_NAME / 'backup_state.json').is_file():
+                raise RuntimeError('번역 백업이 없어 키를 추가하지 않음')
+            # 글을 먼저: 키 이름만 들어가고 글이 없는 상태가 되지 않게
+            if strings_new != strings_raw:
+                atomic_write(bundle, strings_new)
+            if shared_new != shared_raw:
+                _write_shared(game, state, shared_raw, shared_new)
+    return applied
 
 
 # ━━━ 6. LELocalePatch CLI ━━━
@@ -1141,7 +1204,8 @@ class PatchOrchestrator:
             game_updated = self.check_game_updated()
             installed_bundle = find_bundle_path(self.game_path)
             content_matches = (installed_bundle is not None and self.state.data.get("bundle_hash") == sha256_file(installed_bundle))
-            if not self.state.is_outdated(tag) and not game_updated and content_matches:
+            # added_keys 기록이 없으면 키 추가를 모르는 옛 패처가 적용한 것: 한 번 다시 적용해 추가분을 넣음
+            if not self.state.is_outdated(tag) and not game_updated and content_matches and "added_keys" in self.state.data:
                 # 번역은 그대로여도 새 패처가 고치는 키 이름은 여기서 적용 (원본 백업이 있을 때만)
                 self._fix_keys(check_backup=True)
                 msg = f"이미 최신 패치 적용됨 ({tag})"
@@ -1209,7 +1273,7 @@ class PatchOrchestrator:
                         run_lelocale_patch(lelocale_exe, str(bundle_path), "import", json_source)
                         files = self._list_json_files(json_source)
                         self._log(f"LELocalePatch: {len(files)}개 JSON 적용")
-                        self._fix_keys()
+                        self._fix_keys(added_file=self._find_file(extract_dir, ADDED_KEYS_FILE.lower()))
 
                 current_buildid = get_steam_buildid(self.game_path)
                 bh = sha256_file(str(bundle_path))
@@ -1228,8 +1292,13 @@ class PatchOrchestrator:
             log.exception("Patch failed")
         return result
 
-    def _fix_keys(self, check_backup=False):
-        """게임에 빠진 키 이름 추가. 실패해도 번역 적용은 그대로 둠 (그 키만 번호로 나옴)."""
+    def _fix_keys(self, check_backup=False, added_file=None):
+        """게임에 빠진 키 이름 추가. 실패해도 번역 적용은 그대로 둠 (그 키만 번호로 나옴).
+
+        added_file: 번역 패키지의 ADDED_KEYS_FILE 경로. 번역을 새로 적용할 때만 넘김 (없는 패키지면 None).
+        """
+        if not check_backup:
+            self._add_keys(added_file)
         try:
             if check_backup:
                 # 번역을 다시 적용하지 않는 경로: 있는 백업만 확인 (없으면 새로 만들지 않음 — 지금 파일은 원본이 아님)
@@ -1243,6 +1312,19 @@ class PatchOrchestrator:
             return
         if added:
             self._log(f"✅ 게임에 빠진 키 이름 추가: {', '.join(added)}")
+
+    def _add_keys(self, added_file):
+        """게임에 키가 없어 영어로 나오는 글 추가. 실패하면 기록을 남기지 않아 다음 실행 때 다시 시도."""
+        try:
+            applied = apply_added_keys(self.game_path, self.state, load_added_keys(added_file)) if added_file else []
+        except Exception as e:
+            self.state.data.pop("added_keys", None)
+            self._log(f"⚠️ 영어로 나오는 글 추가 건너뜀: {e}")
+            log.exception("Added keys patch failed")
+            return
+        self.state.data["added_keys"] = applied
+        if applied:
+            self._log(f"✅ 게임에 키가 없어 영어로 나오던 글 {len(applied)}개 추가")
 
     def _find_file(self, root_dir, filename_lower):
         for root, dirs, files in os.walk(root_dir):

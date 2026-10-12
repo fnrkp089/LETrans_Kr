@@ -26,6 +26,7 @@ from pathlib import Path
 from datetime import datetime
 
 GITHUB_REPO = "fnrkp089/LETrans_Kr"
+ADDED_KEYS_FILE = "added_keys.json"
 
 try:
     import certifi
@@ -45,21 +46,41 @@ def sha256_file(filepath):
     return h.hexdigest()
 
 
-def create_patch_bundle(json_folder, lelocale_exe, output_zip, version):
+def check_added_keys(path):
+    """추가 키 파일(게임에 키가 없는 글) 형식 확인. 항목 수 반환."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    seen = set()
+    for table, keys in data.items():
+        for name, item in keys.items():
+            if type(item.get("id")) is not int or not str(item.get("ko") or "").strip():
+                raise ValueError(f"추가 키 형식 오류: {table}:{name}")
+            if (table, item["id"]) in seen:
+                raise ValueError(f"추가 키 id 중복: {table}:{item['id']}")
+            seen.add((table, item["id"]))
+    return len(seen)
+
+
+def create_patch_bundle(json_folder, lelocale_exe, output_zip, version, added_keys=None):
     json_dir = Path(json_folder)
     json_files = locale_files(json_dir)
     for path in json_files:
         read_locale(path)
     if not Path(lelocale_exe).is_file():
         raise FileNotFoundError(lelocale_exe)
+    added_count = check_added_keys(added_keys) if added_keys else 0
 
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(lelocale_exe, "LELocalePatch.exe")
         for jf in json_files:
             zf.write(str(jf), jf.name)
+        if added_keys:
+            # 이름이 _ko.json으로 끝나지 않아 LELocalePatch 입력에는 섞이지 않음. 패처가 따로 읽음
+            zf.write(str(added_keys), ADDED_KEYS_FILE)
 
     print(f"✅ 패치 번들 생성: {output_zip}")
     print(f"   JSON 파일: {len(json_files)}개")
+    if added_keys:
+        print(f"   추가 키: {added_count}개")
     print(f"   LELocalePatch.exe 포함")
     return output_zip
 
@@ -227,7 +248,10 @@ def main():
     parser.add_argument("--baseline", type=Path, help="검토된 기존 스냅샷의 동일 오류만 구분")
     parser.add_argument("--include-patcher", action="store_true", help="기존 릴리즈 패처 exe도 포함")
     parser.add_argument("--font-tool", type=Path, help="LEFontPatch.exe 경로 (패처의 폰트 교체 기능용 에셋)")
+    parser.add_argument("--added-keys", type=Path, default=Path(__file__).parent / ADDED_KEYS_FILE,
+                        help="게임에 키가 없는 글 목록 (기본: 이 폴더의 added_keys.json, 없으면 넣지 않음)")
     args = parser.parse_args()
+    added_keys = args.added_keys if args.added_keys.is_file() else None
     if args.font_tool and (not args.font_tool.is_file() or args.font_tool.name != 'LEFontPatch.exe'):
         parser.error('--font-tool은 LEFontPatch.exe 파일이어야 함')
     if not re.fullmatch(r'v?[0-9]+(?:\.[0-9]+){1,3}(?:-[A-Za-z0-9.-]+)?', args.version):
@@ -252,7 +276,7 @@ def main():
         if frozen_errors:
             raise SystemExit('검증 중 번역 변경 감지. 다시 실행 필요')
         zip_path = stage / f'kr-patch-{args.version}.zip'
-        create_patch_bundle(frozen, args.lelocale_exe, zip_path, args.version)
+        create_patch_bundle(frozen, args.lelocale_exe, zip_path, args.version, added_keys)
         files = [str(zip_path)]
         if args.include_patcher:
             exe = download_patcher_exe(str(stage))
